@@ -1,3 +1,4 @@
+print("ПРИНУДИТЕЛЬНЫЙ ТЕСТ ЗАПУСКА")
 import os
 import asyncio
 import aiohttp
