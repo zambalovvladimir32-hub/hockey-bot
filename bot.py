@@ -35,17 +35,24 @@ async def get_ai_analysis(teams, score, league, status):
     return await asyncio.gather(call_ai(gpt_client, "gpt-4o"), call_ai(grok_client, "grok-beta"))
 
 async def check_games():
+    # Работа по Чите (UTC+9)
     now_chita = datetime.now(timezone.utc) + timedelta(hours=9)
-    # Работаем почти всегда, когда есть игры
-    if not (datetime.strptime("09:00", "%H:%M").time() <= now_chita.time() or now_chita.time() <= datetime.strptime("03:00", "%H:%M").time()):
-        return
-
+    
+    # Запрос игр за сегодня (с запасом по времени)
     today = (datetime.now(timezone.utc) + timedelta(hours=3)).strftime('%Y-%m-%d')
     url = f"https://{HOST}/games?date={today}"
     
-    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30)) as session:
+    # Настройки для обхода Connection Reset
+    connector = aiohttp.TCPConnector(ssl=False, keepalive_timeout=30)
+    timeout = aiohttp.ClientTimeout(total=30)
+    
+    async with aiohttp.ClientSession(connector=connector, timeout=timeout) as session:
         try:
             async with session.get(url, headers=HEADERS) as resp:
+                if resp.status != 200:
+                    logger.error(f"Ошибка API: статус {resp.status}")
+                    return
+
                 data = await resp.json()
                 games = data.get('response', [])
                 
@@ -53,32 +60,34 @@ async def check_games():
                     gid = game['id']
                     if gid in sent_signals: continue
                     
-                    # 1. ПРОВЕРКА ЛИГИ (Обязательно)
-                    league_id = game.get('league', {}).get('id')
-                    if league_id not in ALLOWED_LEAGUES:
+                    # 1. ПРОВЕРКА ЛИГИ
+                    l_id = game.get('league', {}).get('id')
+                    if l_id not in ALLOWED_LEAGUES:
                         continue
                     
-                    status_short = game['status']['short']
+                    status_short = str(game['status']['short']).upper()
+                    status_long = str(game['status']['long']).upper()
+                    
+                    # 2. ГИБКИЙ ФИЛЬТР СТАТУСА
+                    # Ловим всё, что похоже на 1-й период или перерыв
+                    is_p1 = any(x in status_short for x in ['P1', 'IP', 'INT', '1ST']) or "FIRST" in status_long
+                    is_break = "INTERMISSION" in status_long or "ПЕРЕРЫВ" in status_long
+                    
                     scores = game['scores']
                     h_s = scores.get('home', 0) if scores.get('home') is not None else 0
                     a_s = scores.get('away', 0) if scores.get('away') is not None else 0
-                    total_goals = h_s + a_s
                     
-                    # ГИБКИЙ ФИЛЬТР (Сработает, если выполнено ХОТЯ БЫ ОДНО из условий)
-                    is_p1 = status_short in ['P1', 'IP', 'INT'] # Идет 1-й период или перерыв
-                    is_low_score = total_goals <= 1             # Счет 0:0 или 1:0
-                    
-                    # Если лига наша И (идет 1-й период ИЛИ счет маленький)
-                    if is_p1 or (status_short in ['P2', 'P3'] and total_goals == 0):
+                    # Условие: Идет 1-й период/перерыв ИЛИ (идет 2-й период но счет 0:0)
+                    if is_p1 or is_break or (status_short == 'P2' and (h_s + a_s) == 0):
                         teams = f"{game['teams']['home']['name']} — {game['teams']['away']['name']}"
                         league_name = game['league']['name']
                         
-                        logger.info(f"ГИБКИЙ СИГНАЛ: {teams} (Счет: {h_s}:{a_s}, Статус: {status_short})")
+                        logger.info(f"СИГНАЛ: {teams} (Счет: {h_s}:{a_s}, Статус: {status_short})")
                         
-                        gpt_res, grok_res = await get_ai_analysis(teams, f"{h_s}:{a_s}", league_name, game['status']['long'])
+                        gpt_res, grok_res = await get_ai_analysis(teams, f"{h_s}:{a_s}", league_name, status_long)
                         
                         msg = (
-                            f"🏒 **ПОТЕНЦИАЛЬНЫЙ МАТЧ**\n\n"
+                            f"🏒 **LIVE: НАШ ХОККЕЙ**\n\n"
                             f"⚔️ {teams}\n"
                             f"🏆 {league_name}\n"
                             f"📊 Счет: {h_s}:{a_s}\n"
@@ -90,13 +99,14 @@ async def check_games():
                         sent_signals.add(gid)
 
         except Exception as e:
-            logger.error(f"Ошибка: {e}")
+            logger.error(f"Ошибка в цикле: {e}")
 
 async def main():
-    logger.info("Бот запущен. Гибкий фильтр (1-й период ИЛИ сухой счет) активен.")
+    logger.info("Бот запущен. Тотальный мониторинг РФ + Словакия.")
     while True:
         await check_games()
-        await asyncio.sleep(180)
+        # Пауза 4 минуты, чтобы API не сбрасывало соединение
+        await asyncio.sleep(240)
 
 if __name__ == "__main__":
     asyncio.run(main())
