@@ -1,4 +1,3 @@
+google-genai
 aiogram
 aiohttp
-openai
-google-generativeai
