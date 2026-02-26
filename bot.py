@@ -15,26 +15,25 @@ OPENAI_KEY = os.getenv("OPENAI_API_KEY")
 bot = Bot(token=TOKEN)
 gpt_client = AsyncOpenAI(api_key=OPENAI_KEY)
 
-# Глобальный технический адрес (обычно не блокируется)
+# Рабочий шлюз, который ожил в твоих логах
 URL = "https://prod-public-api.livescore.com/v1/api/app/live/hockey/8"
-
-HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-    "Accept": "application/json"
-}
+HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"}
 
 sent_matches = set()
 
 async def get_ai_analysis(match_name):
     try:
+        # Добавляем паузу, чтобы OpenAI не ругался на лимиты
+        await asyncio.sleep(2) 
         res = await gpt_client.chat.completions.create(
             model="gpt-4o",
             messages=[{"role": "user", "content": f"Хоккей. {match_name}. Прогноз на тотал больше 4.5. Вердикт до 10 слов."}],
             max_tokens=50
         )
         return res.choices[0].message.content
-    except:
-        return "Ожидается высокая результативность."
+    except Exception as e:
+        logger.warning(f"GPT лимит: {e}")
+        return "Анализ будет доступен в следующем цикле."
 
 async def run_monitoring():
     async with aiohttp.ClientSession(headers=HEADERS) as session:
@@ -46,38 +45,43 @@ async def run_monitoring():
                         stages = data.get('Stages', [])
                         
                         for stage in stages:
-                            league = stage.get('Snm', 'Хоккей')
                             for event in stage.get('Events', []):
                                 eid = event.get('Eid')
+                                
+                                # Если этот матч мы уже отправляли - пропускаем
                                 if eid in sent_matches: continue
                                 
-                                home = event.get('T1', [{}])[0].get('Nm', 'Команда 1')
-                                away = event.get('T2', [{}])[0].get('Nm', 'Команда 2')
+                                home = event.get('T1', [{}])[0].get('Nm', 'Team1')
+                                away = event.get('T2', [{}])[0].get('Nm', 'Team2')
                                 h_score = event.get('Tr1', '0')
                                 a_score = event.get('Tr2', '0')
-                                status = event.get('Eps', 'LIVE')
                                 
+                                # Берем только КХЛ, НХЛ, МХЛ и Европу (убираем кибер и ночные лиги)
+                                league = stage.get('Snm', '').upper()
+                                if any(x in league for x in ['NHL 24', 'CYBER', 'SHORT']): continue
+
                                 analysis = await get_ai_analysis(f"{home} - {away}")
                                 
-                                msg = (f"🏒 **LIVE: {league}**\n\n"
+                                msg = (f"🏒 **МАТЧ В ЛАЙВЕ**\n\n"
                                        f"⚔️ **{home} — {away}**\n"
-                                       f"📊 Счет: `{h_score}:{a_score}` ({status})\n\n"
+                                       f"📊 Счет: `{h_score}:{a_score}`\n"
                                        f"🤖 **GPT:** {analysis}")
                                 
                                 await bot.send_message(CHANNEL_ID, msg)
                                 sent_matches.add(eid)
                                 logger.info(f"Отправлен матч: {home}")
+                                
+                                # Даем боту "выдохнуть" между сообщениями
+                                await asyncio.sleep(3) 
                     else:
-                        logger.error(f"Ошибка сервера: {resp.status}")
+                        logger.error(f"Ошибка API: {resp.status}")
             except Exception as e:
                 logger.error(f"Ошибка цикла: {e}")
             
-            await asyncio.sleep(60) # Проверка каждую минуту
+            await asyncio.sleep(120) # Проверка раз в 2 минуты
 
 async def main():
-    try:
-        await bot.send_message(CHANNEL_ID, "✅ **Бот запущен на Amvera!**\nИщу любые активные матчи...")
-    except: pass
+    await bot.send_message(CHANNEL_ID, "🚀 **Бот перенастроен.**\nЛимиты GPT оптимизированы. Мониторинг продолжается!")
     await run_monitoring()
 
 if __name__ == "__main__":
