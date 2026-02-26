@@ -2,6 +2,7 @@ import asyncio
 import aiohttp
 import os
 import logging
+import random
 from aiogram import Bot
 from openai import AsyncOpenAI
 
@@ -15,79 +16,95 @@ OPENAI_KEY = os.getenv("OPENAI_API_KEY")
 bot = Bot(token=TOKEN)
 gpt_client = AsyncOpenAI(api_key=OPENAI_KEY)
 
-# Используем мобильный фид, он легче и реже блокируется
-URL = "https://v3.ls-api.com/get/hockey/live" 
+# Скрытый мобильный фид (меньше защиты, чем на сайте)
+URL = "https://v3.ls-api.com/get/hockey/live"
 
-HEADERS = {
-    "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Mobile/15E148 Safari/604.1",
-    "Accept": "application/json",
-    "Origin": "https://www.flashscorekz.com",
-    "Referer": "https://www.flashscorekz.com/"
-}
+# Расширенный список User-Agent для ротации (чтобы не забанили)
+USER_AGENTS = [
+    "Mozilla/5.0 (iPhone; CPU iPhone OS 17_4_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4.1 Mobile/15E148 Safari/604.1",
+    "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Mobile Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+]
 
 sent_signals = set()
 
-async def get_ai_analysis(match_data):
-    prompt = f"Хоккей. {match_data}. Оцени вероятность ТБ 4.5. Вердикт до 12 слов."
+async def get_ai_analysis(match_info):
     try:
         res = await gpt_client.chat.completions.create(
-            model="gpt-4o", messages=[{"role": "user", "content": prompt}], max_tokens=50
+            model="gpt-4o", 
+            messages=[{"role": "user", "content": f"Хоккей. {match_info}. Прогноз на ТБ 4.5 в 10 словах."}],
+            max_tokens=40
         )
         return res.choices[0].message.content
-    except: return "Статистика подтверждает прогноз."
+    except: return "ИИ рекомендует присмотреться к ТБ."
 
-async def check_matches():
-    # Создаем сессию с отключенным SSL, чтобы Amvera не блокировала handshake
+async def run_monitor():
+    # Ротация заголовков
+    headers = {
+        "User-Agent": random.choice(USER_AGENTS),
+        "Accept": "application/json",
+        "Referer": "https://www.flashscore.kz/",
+        "Origin": "https://www.flashscore.kz"
+    }
+    
+    # Решаем проблему SSL и закрытых сессий (всегда создаем новую)
     connector = aiohttp.TCPConnector(ssl=False)
-    async with aiohttp.ClientSession(connector=connector, headers=HEADERS) as session:
+    async with aiohttp.ClientSession(connector=connector, headers=headers) as session:
         try:
-            async with session.get(URL, timeout=10) as resp:
+            async with session.get(URL, timeout=20) as resp:
                 if resp.status != 200:
-                    logger.error(f"Код ошибки: {resp.status}")
+                    logger.error(f"Сайт ответил кодом {resp.status}")
                     return
-                
+
                 data = await resp.json()
-                # Перебираем игры
-                for game in data.get('data', []):
-                    eid = game.get('id')
+                games = data.get('data', [])
+                
+                # Твои лиги из скринов (Салават, Трактор, Горняк и т.д.)
+                target_leagues = ['KHL', 'VHL', 'KAZAKHSTAN', 'MHL', 'RUSSIA']
+                
+                for g in games:
+                    eid = g.get('id')
                     if eid in sent_signals: continue
                     
-                    league = game.get('league_name', '').upper()
-                    # Ищем наши лиги из твоего скрина
-                    target = ['KHL', 'VHL', 'KAZAKHSTAN', 'RUSSIA', 'MHL']
-                    if not any(x in league for x in target): continue
+                    league = g.get('league_name', '').upper()
+                    if not any(x in league for x in target_leagues): continue
                     
-                    home = game.get('home_name')
-                    away = game.get('away_name')
-                    h_score = int(game.get('home_score', 0))
-                    a_score = int(game.get('away_score', 0))
-                    status = game.get('status_name', '').upper()
+                    # Данные матча
+                    home = g.get('home_name')
+                    away = g.get('away_name')
+                    h_score = int(g.get('home_score', 0))
+                    a_score = int(g.get('away_score', 0))
+                    status = g.get('status_name', '').upper()
                     
-                    # Твои условия: 1-й период или 2-й период 0:0
+                    # Условия: 1-й период ИЛИ 2-й период со счетом 0:0
                     is_p1 = '1' in status
                     is_p2_zero = '2' in status and (h_score + a_score == 0)
                     
                     if is_p1 or is_p2_zero:
-                        teams = f"{home} — {away}"
-                        analysis = await get_ai_analysis(f"{teams}, счет {h_score}:{a_score}")
+                        match_text = f"{home} - {away}, счет {h_score}:{a_score}"
+                        analysis = await get_ai_analysis(match_text)
                         
-                        msg = (f"🏒 **СИГНАЛ: {league}**\n\n"
-                               f"⚔️ {teams}\n"
-                               f"📊 Счет: `{h_score}:{a_score}`\n"
-                               f"⏱ Период: {status}\n\n"
-                               f"🤖 {analysis}")
+                        final_msg = (
+                            f"🏒 **СИГНАЛ: {league}**\n\n"
+                            f"⚔️ **{home} — {away}**\n"
+                            f"📊 Счет: `{h_score}:{a_score}`\n"
+                            f"⏱ Статус: `{status}`\n\n"
+                            f"🤖 **ИИ:** {analysis}"
+                        )
                         
-                        await bot.send_message(CHANNEL_ID, msg)
+                        await bot.send_message(CHANNEL_ID, final_msg)
                         sent_signals.add(eid)
-                        
+                        logger.info(f"Отправлен сигнал по {home}")
+
         except Exception as e:
-            logger.error(f"Ошибка парсинга: {e}")
+            logger.error(f"Ошибка в работе: {e}")
 
 async def main():
-    logger.info("Бот запущен!")
+    await bot.send_message(CHANNEL_ID, "🛡 **Бот запущен в режиме обхода блокировок.**")
     while True:
-        await check_matches()
-        await asyncio.sleep(120)
+        await run_monitor()
+        # Проверяем каждые 4 минуты, чтобы не привлекать внимание защиты
+        await asyncio.sleep(240)
 
 if __name__ == "__main__":
     asyncio.run(main())
