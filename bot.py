@@ -11,54 +11,45 @@ TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHANNEL_ID = os.getenv("CHANNEL_ID")
 bot = Bot(token=TOKEN)
 
-# Мобильный шлюз (то, что использует само приложение Flashscore)
-URL = "https://m.flashscore.kz/x/feed/proxy-hockey" 
+# Это зеркало данных, которое использует мобильное приложение (оно без лимитов)
+TEST_URL = "https://prod-public-api.livescore.com/v1/api/app/live/hockey/8"
 
 HEADERS = {
-    "User-Agent": "FlashScore/5.10.0 (iPhone; iOS 17.2; Scale/3.00)",
-    "X-Referer": "https://www.flashscorekz.com/",
-    "X-Requested-With": "com.flashscore.kz",
-    "Accept": "*/*"
+    "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148",
+    "Origin": "https://www.flashscore.kz",
+    "Referer": "https://www.flashscore.kz/"
 }
 
-async def run_test():
-    logger.info("Пробуем пробиться через мобильный шлюз...")
+async def check_visibility():
+    logger.info("Проверка связи с бесплатным шлюзом данных...")
     
-    # Отключаем проверку SSL, чтобы Amvera не ругалась
+    # SSL=False помогает обойти ошибки сертификатов на Amvera
     connector = aiohttp.TCPConnector(ssl=False)
     async with aiohttp.ClientSession(connector=connector, headers=HEADERS) as session:
         try:
-            # Делаем запрос к скрытому фиду
-            async with session.get("https://d.flashscore.kz/x/feed/l_3_1", timeout=15) as resp:
-                status = resp.status
-                raw_data = await resp.text()
-                
-                if status == 200:
-                    # Данные приходят в текстовом формате Flashscore (нужно просто проверить наличие команд)
-                    # Если в тексте есть 'Salavat' или 'Traktor', значит мы победили
-                    matches_found = []
-                    if "Salavat" in raw_data or "Салават" in raw_data: matches_found.append("Салават Юлаев")
-                    if "Traktor" in raw_data or "Трактор" in raw_data: matches_found.append("Трактор")
-                    if "Gornyak" in raw_data or "Горняк" in raw_data: matches_found.append("Горняк")
-
-                    res_text = "✅ **СВЯЗЬ УСТАНОВЛЕНА!**\n\n"
-                    if matches_found:
-                        res_text += "Бот видит твои матчи из скриншота:\n" + "\n".join([f"• {m}" for m in matches_found])
-                    else:
-                        res_text += "Сайт ответил, но матчи в сыром коде не распознаны. Нужно парсить текст."
+            async with session.get(TEST_URL, timeout=15) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    stages = data.get('Stages', [])
                     
-                    await bot.send_message(CHANNEL_ID, res_text, parse_mode="Markdown")
-                else:
-                    await bot.send_message(CHANNEL_ID, f"❌ Снова отказ (Код {status}). Пробую запасной шлюз...")
-                    # Попытка через глобальное зеркало
-                    async with session.get("https://v3ds.ls-api.com/get/hockey/live", timeout=10) as resp2:
-                        if resp2.status == 200:
-                            await bot.send_message(CHANNEL_ID, "🌐 Запасное зеркало (Global API) работает! Переходим на него.")
-                        else:
-                            await bot.send_message(CHANNEL_ID, "🚫 Amvera заблокировала все пути. Нужно менять сервер.")
+                    if not stages:
+                        await bot.send_message(CHANNEL_ID, "✅ Связь есть! Но в хоккее сейчас перерыв (матчей в лайве нет).")
+                        return
 
+                    text = "🏒 **БОТ ВИДИТ МАТЧИ (БЕЗ ЛИМИТОВ):**\n\n"
+                    for stage in stages[:3]: # Берем первые 3 лиги
+                        league = stage.get('Snm', 'Лига')
+                        for event in stage.get('Events', []):
+                            home = event.get('T1', [{}])[0].get('Nm', 'Хозяева')
+                            away = event.get('T2', [{}])[0].get('Nm', 'Гости')
+                            score = f"{event.get('Tr1', 0)}:{event.get('Tr2', 0)}"
+                            text += f"🏆 {league}\n⚔️ {home} — {away} | `{score}`\n\n"
+                    
+                    await bot.send_message(CHANNEL_ID, text, parse_mode="Markdown")
+                else:
+                    await bot.send_message(CHANNEL_ID, f"❌ Ошибка зеркала: {resp.status}. Amvera всё еще блокирует прямой доступ.")
         except Exception as e:
-            await bot.send_message(CHANNEL_ID, f"⚠️ Ошибка сети: {str(e)[:50]}")
+            await bot.send_message(CHANNEL_ID, f"🚫 Ошибка сети: {str(e)[:50]}")
 
 if __name__ == "__main__":
-    asyncio.run(run_test())
+    asyncio.run(check_visibility())
