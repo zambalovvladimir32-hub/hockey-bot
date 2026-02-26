@@ -2,82 +2,125 @@ import asyncio
 import aiohttp
 import logging
 import os
-from datetime import datetime, timezone, timedelta
-from aiogram import Bot
+from datetime import datetime, timedelta, timezone
+from aiogram import Bot, Dispatcher
+from openai import AsyncOpenAI
 
-# Настройка логов
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# Данные из Amvera
+# Ключи
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHANNEL_ID = os.getenv("CHANNEL_ID")
 API_KEY = os.getenv("FOOTBALL_API_KEY")
+OPENAI_KEY = os.getenv("OPENAI_API_KEY")
+GROK_KEY = os.getenv("GROK_API_KEY")
 
+gpt_client = AsyncOpenAI(api_key=OPENAI_KEY)
+grok_client = AsyncOpenAI(api_key=GROK_KEY, base_url="https://api.x.ai/v1")
 bot = Bot(token=TOKEN)
 
-# Хост для хоккея
 HOST = 'v1.hockey.api-sports.io'
-HEADERS = {
-    'x-rapidapi-key': API_KEY,
-    'x-rapidapi-host': HOST
-}
+HEADERS = {'x-rapidapi-key': API_KEY, 'x-rapidapi-host': HOST}
 
-async def check_live_games():
-    # Получаем сегодняшнюю дату (МСК)
+sent_signals = set()
+
+async def get_ai_analysis(teams, score, league):
+    prompt = f"Хоккей. 1-й период. Матч: {teams} ({league}). Счет: {score}. Оцени вероятность ТБ 4.5. Один вердикт (15 слов)."
+    async def call_ai(client, model):
+        try:
+            res = await client.chat.completions.create(model=model, messages=[{"role": "user", "content": prompt}], max_tokens=100)
+            return res.choices[0].message.content
+        except: return "Анализ временно недоступен."
+    return await asyncio.gather(call_ai(gpt_client, "gpt-4o"), call_ai(grok_client, "grok-beta"))
+
+async def get_shots(game_id):
+    # Получение статистики бросков (shots on goal)
+    url = f"https://{HOST}/games/statistics?id={game_id}"
+    async with aiohttp.ClientSession() as session:
+        try:
+            async with session.get(url, headers=HEADERS) as resp:
+                data = await resp.json()
+                stats = data.get('response', [])
+                if not stats: return 0
+                # Суммируем броски обеих команд
+                total_shots = 0
+                for team_stat in stats:
+                    for s in team_stat.get('statistics', []):
+                        if s.get('type') == 'Shots on Goal':
+                            total_shots += int(s.get('value') or 0)
+                return total_shots
+        except: return 0
+
+async def check_games():
+    # Настройка времени (Чита = UTC+9)
+    now_chita = datetime.now(timezone.utc) + timedelta(hours=9)
+    current_time = now_chita.time()
+    
+    # Работаем с 16:20 до 03:00 (Читинское время)
+    start_time = datetime.strptime("16:20", "%H:%M").time()
+    end_time = datetime.strptime("03:00", "%H:%M").time()
+    
+    is_working = False
+    if start_time <= current_time or current_time <= end_time:
+        is_working = True
+
+    if not is_working:
+        logger.info(f"Спим. Чита: {now_chita.strftime('%H:%M')}. Старт в 16:20.")
+        return
+
     today = (datetime.now(timezone.utc) + timedelta(hours=3)).strftime('%Y-%m-%d')
     url = f"https://{HOST}/games?date={today}"
-    
-    logger.info(f"--- ЗАПРОС ИГР НА СЕГОДНЯ: {today} ---")
     
     async with aiohttp.ClientSession() as session:
         try:
             async with session.get(url, headers=HEADERS) as resp:
                 data = await resp.json()
+                games = data.get('response', [])
                 
-                if data.get('errors'):
-                    logger.error(f"Ошибка API: {data['errors']}")
-                    return
-
-                all_games = data.get('response', [])
-                if not all_games:
-                    logger.info("На сегодня матчей в базе не найдено.")
-                    return
-
-                # Фильтруем те, что идут в LIVE (статусы периодов или просто LIVE)
-                live_statuses = ['P1', 'P2', 'P3', 'OT', 'PSS', 'LIVE']
-                live_games = [g for g in all_games if g.get('status', {}).get('short') in live_statuses]
-
-                if not live_games:
-                    msg = "В лайве сейчас пусто (в базе API нет активных игр)."
-                    logger.info(msg)
-                    # Можно не спамить в канал, если пусто, либо отправить один раз
-                    return
-
-                await bot.send_message(CHANNEL_ID, f"🏒 **НАЙДЕНО {len(live_games)} ИГР В ЛАЙВЕ:**")
-
-                for game in live_games:
-                    home = game['teams']['home']['name']
-                    away = game['teams']['away']['name']
-                    league = game['league']['name']
-                    status = game['status']['long']
+                for game in games:
+                    gid = game['id']
+                    if gid in sent_signals: continue
                     
-                    scores = game.get('scores', {})
-                    h_s = scores.get('home', 0) if scores.get('home') is not None else 0
-                    a_s = scores.get('away', 0) if scores.get('away') is not None else 0
-
-                    text = (
-                        f"🏒 **{home} — {away}**\n"
-                        f"🏆 {league}\n"
-                        f"📊 Счет: {h_s}:{a_s}\n"
-                        f"⏱ Статус: {status}"
-                    )
-                    await bot.send_message(CHANNEL_ID, text)
-                    await asyncio.sleep(0.5)
+                    status_short = game['status']['short']
+                    # Фильтр: только 1-й период
+                    if status_short == 'P1':
+                        scores = game['scores']
+                        h_s = scores.get('home', 0) or 0
+                        a_s = scores.get('away', 0) or 0
+                        
+                        # Фильтр: счет 0:0 или 1:0/0:1
+                        if (h_s + a_s) <= 1:
+                            shots = await get_shots(gid)
+                            
+                            # Фильтр: Броски 8+
+                            if shots >= 8:
+                                teams = f"{game['teams']['home']['name']} — {game['teams']['away']['name']}"
+                                league = game['league']['name']
+                                
+                                logger.info(f"СИГНАЛ: {teams} (Броски: {shots})")
+                                gpt_res, grok_res = await get_ai_analysis(teams, f"{h_s}:{a_s}", league)
+                                
+                                msg = (
+                                    f"🏒 **СИГНАЛ: ТОТАЛ БОЛЬШЕ (LIVE)**\n\n"
+                                    f"⚔️ {teams}\n"
+                                    f"🏆 {league}\n"
+                                    f"⏰ 1-й период | Счет: {h_s}:{a_s}\n"
+                                    f"🎯 Броски в створ: {shots}\n\n"
+                                    f"🤖 **GPT-4o:** {gpt_res}\n\n"
+                                    f"🦾 **GROK:** {grok_res}"
+                                )
+                                await bot.send_message(CHANNEL_ID, msg)
+                                sent_signals.add(gid)
 
         except Exception as e:
-            logger.error(f"Ошибка в коде: {e}")
+            logger.error(f"Ошибка цикла: {e}")
+
+async def main():
+    logger.info("Бот запущен и следит за хоккеем!")
+    while True:
+        await check_games()
+        await asyncio.sleep(120) # Проверка каждые 2 минуты
 
 if __name__ == "__main__":
-    # Запускаем один раз для теста. Для постоянной работы нужно обернуть в while True
-    asyncio.run(check_live_games())
+    asyncio.run(main())
