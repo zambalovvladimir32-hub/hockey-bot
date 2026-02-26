@@ -9,7 +9,6 @@ from openai import AsyncOpenAI
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# Ключи
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHANNEL_ID = os.getenv("CHANNEL_ID")
 API_KEY = os.getenv("FOOTBALL_API_KEY")
@@ -22,8 +21,6 @@ bot = Bot(token=TOKEN)
 
 HOST = 'v1.hockey.api-sports.io'
 HEADERS = {'x-rapidapi-key': API_KEY, 'x-rapidapi-host': HOST}
-
-# ТВОИ КОДЫ ЛИГ
 ALLOWED_LEAGUES = [57, 40, 51, 41, 120, 110, 66, 114, 182, 185, 17]
 
 sent_signals = set()
@@ -38,26 +35,26 @@ async def get_ai_analysis(teams, score, league):
     return await asyncio.gather(call_ai(gpt_client, "gpt-4o"), call_ai(grok_client, "grok-beta"))
 
 async def check_games():
-    # Настройка времени (Чита = UTC+9)
     now_chita = datetime.now(timezone.utc) + timedelta(hours=9)
     current_time = now_chita.time()
-    
     start_time = datetime.strptime("16:20", "%H:%M").time()
     end_time = datetime.strptime("03:00", "%H:%M").time()
     
-    is_working = False
-    if start_time <= current_time or current_time <= end_time:
-        is_working = True
-
-    if not is_working:
+    if not (start_time <= current_time or current_time <= end_time):
         return
 
     today = (datetime.now(timezone.utc) + timedelta(hours=3)).strftime('%Y-%m-%d')
     url = f"https://{HOST}/games?date={today}"
     
-    async with aiohttp.ClientSession() as session:
+    # Таймауты для защиты от зависания
+    timeout = aiohttp.ClientTimeout(total=30)
+    async with aiohttp.ClientSession(timeout=timeout) as session:
         try:
             async with session.get(url, headers=HEADERS) as resp:
+                if resp.status == 429:
+                    logger.warning("Слишком много запросов (429). Ждем...")
+                    return
+                
                 data = await resp.json()
                 games = data.get('response', [])
                 
@@ -65,23 +62,19 @@ async def check_games():
                     gid = game['id']
                     if gid in sent_signals: continue
                     
-                    league_id = game.get('league', {}).get('id')
-                    if league_id not in ALLOWED_LEAGUES:
+                    if game.get('league', {}).get('id') not in ALLOWED_LEAGUES:
                         continue
                     
                     status_short = game['status']['short']
-                    # КОРРЕКТИРОВКА: Ловим 1-й период (P1) и перерыв (может быть IP или Intermission)
+                    # Ловим P1 и перерыв (IP/INT)
                     if status_short in ['P1', 'IP', 'INT']:
                         scores = game['scores']
                         h_s = scores.get('home', 0) or 0
                         a_s = scores.get('away', 0) or 0
                         
-                        # Фильтр: счет 0:0 или 1:0/0:1
                         if (h_s + a_s) <= 1:
                             teams = f"{game['teams']['home']['name']} — {game['teams']['away']['name']}"
                             league_name = game['league']['name']
-                            
-                            # Уточняем статус для сообщения
                             display_status = "1-й период" if status_short == 'P1' else "ПЕРЕРЫВ (после 1-го)"
                             
                             logger.info(f"СИГНАЛ: {teams} ({display_status})")
@@ -99,14 +92,16 @@ async def check_games():
                             await bot.send_message(CHANNEL_ID, msg)
                             sent_signals.add(gid)
 
+        except aiohttp.ClientConnectorError:
+            logger.error("Ошибка подключения к серверу API. Повтор через 5 минут.")
         except Exception as e:
             logger.error(f"Ошибка цикла: {e}")
 
 async def main():
-    logger.info("Бот запущен. Расширенный мониторинг 1-го периода активен!")
+    logger.info("Бот запущен. Расширенный мониторинг активен!")
     while True:
         await check_games()
-        await asyncio.sleep(120)
+        await asyncio.sleep(300) # Пауза 5 минут для обхода лимитов
 
 if __name__ == "__main__":
     asyncio.run(main())
