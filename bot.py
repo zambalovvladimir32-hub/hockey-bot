@@ -1,11 +1,16 @@
 import asyncio
 import aiohttp
 import logging
+import os  # ЭТОГО НЕ ХВАТАЛО
 from datetime import datetime, timedelta, timezone
 from aiogram import Bot, Dispatcher
 from openai import AsyncOpenAI
 
-logging.basicConfig(level=logging.INFO)
+# Настройка логирования, чтобы мы видели сообщения в Amvera
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
 logger = logging.getLogger(__name__)
 
 # Ключи
@@ -38,22 +43,30 @@ async def get_ai_analysis(teams, score, league, shots):
                 max_tokens=150
             )
             return res.choices[0].message.content
-        except: return "Анализ временно недоступен."
+        except Exception as e:
+            logger.error(f"Ошибка AI ({model}): {e}")
+            return "Анализ временно недоступен."
 
     return await asyncio.gather(call_ai(gpt_client, "gpt-4o"), call_ai(grok_client, "grok-beta"))
 
 async def check_games():
     # Работа по МСК: 16:20 - 03:00 (Чита: 22:20 - 09:00)
     now = datetime.now(timezone.utc) + timedelta(hours=3)
+    logger.info(f"Проверка игр... Текущее время МСК: {now.strftime('%H:%M')}")
+    
     if not (now.hour >= 16 or now.hour < 3):
         return
 
     async with aiohttp.ClientSession() as session:
         try:
             async with session.get(URL) as resp:
-                if resp.status != 200: return
+                if resp.status != 200: 
+                    logger.warning(f"Ошибка Sportradar: {resp.status}")
+                    return
                 data = await resp.json()
-        except: return
+        except Exception as e:
+            logger.error(f"Ошибка сети: {e}")
+            return
 
     for game in data.get('summaries', []):
         sid = game.get('sport_event', {}).get('id')
@@ -63,9 +76,7 @@ async def check_games():
         if status.get('period') == 1:
             h, a = status.get('home_score', 0), status.get('away_score', 0)
             
-            # Условие по счету
             if (h + a) <= 1:
-                # Фильтр по броскам (Теперь 8!)
                 total_shots = status.get('home_shots_on_goal', 0) + status.get('away_shots_on_goal', 0)
                 
                 if total_shots >= 8:
@@ -73,6 +84,7 @@ async def check_games():
                     teams = f"{event['competitors'][0]['name']} — {event['competitors'][1]['name']}"
                     league = event.get('tournament', {}).get('name', 'Хоккей')
 
+                    logger.info(f"Нашли подходящий матч: {teams}")
                     gpt_res, grok_res = await get_ai_analysis(teams, f"{h}:{a}", league, total_shots)
 
                     msg = (
@@ -86,10 +98,15 @@ async def check_games():
                         f"📈 *Ставка: ТБ 3.5 на весь матч*"
                     )
                     
-                    await bot.send_message(chat_id=CHANNEL_ID, text=msg)
-                    sent_signals.add(sid)
+                    try:
+                        await bot.send_message(chat_id=CHANNEL_ID, text=msg, parse_mode="Markdown")
+                        sent_signals.add(sid)
+                        logger.info("Сигнал отправлен в канал!")
+                    except Exception as e:
+                        logger.error(f"Ошибка отправки в Telegram: {e}")
 
 async def main():
+    logger.info("Бот (Sportradar + GPT + Grok) запущен и готов к работе!")
     while True:
         await check_games()
         await asyncio.sleep(300)
