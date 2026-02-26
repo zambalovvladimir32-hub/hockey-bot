@@ -1,12 +1,12 @@
 import asyncio
 import aiohttp
 import os
-import logging
 import re
+import logging
 from aiogram import Bot
 from openai import AsyncOpenAI
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s')
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 TOKEN = os.getenv("TELEGRAM_TOKEN")
@@ -16,12 +16,12 @@ OPENAI_KEY = os.getenv("OPENAI_API_KEY")
 bot = Bot(token=TOKEN)
 gpt_client = AsyncOpenAI(api_key=OPENAI_KEY)
 
-# Прямой мобильный поток данных
-URL = "https://m.flashscore.kz/x/feed/proxy-direct"
+# Используем альтернативный "зеркальный" адрес, который реже блокируют
+URL = "https://m.flashscore.com.ua/x/feed/proxy-direct"
 HEADERS = {
-    "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
-    "x-referer": "https://m.flashscore.kz/",
-    "x-requested-with": "XMLHttpRequest"
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "x-referer": "https://m.flashscore.com.ua/",
+    "Origin": "https://m.flashscore.com.ua"
 }
 
 sent_signals = set()
@@ -30,62 +30,62 @@ async def get_ai_analysis(match_text):
     try:
         res = await gpt_client.chat.completions.create(
             model="gpt-4o",
-            messages=[{"role": "user", "content": f"Хоккей {match_text}. Дай дерзкий прогноз на тотал больше в 10 словах."}],
-            max_tokens=50
+            messages=[{"role": "user", "content": f"Хоккей {match_text}. Прогноз на голы в 10 словах."}],
+            max_tokens=40
         )
         return res.choices[0].message.content
-    except: return "ИИ видит здесь много заброшенных шайб!"
+    except:
+        return "ИИ ждет результативный период!"
 
-async def check_all_matches():
+async def check():
     async with aiohttp.ClientSession(headers=HEADERS) as session:
         try:
-            # Запрашиваем вообще все хоккейные лайв-события (f:8 - хоккей, p:1 - лайв)
+            # Запрашиваем хоккей (f:8), лайв (p:1)
             async with session.get(URL, params={'f': '8', 'p': '1', 't': '1'}, timeout=15) as resp:
+                if resp.status != 200:
+                    logger.error(f"Код ошибки: {resp.status}")
+                    return
+                
                 raw_data = await resp.text()
-                
-                # Разбиваем поток на отдельные матчи
-                sections = raw_data.split('~')
-                
-                for section in sections:
-                    if 'AA÷' not in section: continue
+                # Если данных нет, Flashscore пришлет пустую строку или ошибку
+                if not raw_data or 'AA÷' not in raw_data:
+                    return
+
+                matches = raw_data.split('~')
+                for m in matches:
+                    if 'AA÷' not in m: continue
                     
-                    # Извлекаем данные через регулярки или поиск (это надежнее для Flashscore)
-                    mid = re.search(r'AA÷([^¬]+)', section)
-                    home = re.search(r'AE÷([^¬]+)', section)
-                    away = re.search(r'AF÷([^¬]+)', section)
-                    h_score = re.search(r'AG÷([^¬]+)', section)
-                    a_score = re.search(r'AH÷([^¬]+)', section)
-                    league = re.search(r'ZA÷([^¬]+)', section)
-                    
-                    if mid:
-                        match_id = mid.group(1)
-                        if match_id in sent_signals: continue
+                    # Парсим данные через регулярки
+                    try:
+                        mid = re.search(r'AA÷([^¬]+)', m).group(1)
+                        if mid in sent_signals: continue
                         
-                        h_team = home.group(1) if home else "Команда А"
-                        a_team = away.group(1) if away else "Команда Б"
-                        score = f"{h_score.group(1) if h_score else 0}:{a_score.group(1) if a_score else 0}"
-                        lg_name = league.group(1) if league else "HOCKEY LIVE"
+                        home = re.search(r'AE÷([^¬]+)', m).group(1)
+                        away = re.search(r'AF÷([^¬]+)', m).group(1)
+                        h_score = re.search(r'AG÷([^¬]+)', m).group(1)
+                        a_score = re.search(r'AH÷([^¬]+)', m).group(1)
+                        league = re.search(r'ZA÷([^¬]+)', m).group(1)
                         
-                        # Делаем анализ и шлем сразу!
-                        analysis = await get_ai_analysis(f"{h_team} - {a_team}")
+                        analysis = await get_ai_analysis(f"{home}-{away}")
                         
-                        msg = (f"🏒 **LIVE: {lg_name}**\n\n"
-                               f"⚔️ **{h_team} — {a_team}**\n"
-                               f"📊 Текущий счет: `{score}`\n\n"
-                               f"🤖 **ВЕРДИКТ:** {analysis}")
+                        msg = (f"🏒 **LIVE: {league}**\n\n"
+                               f"⚔️ **{home} — {away}**\n"
+                               f"📊 Счет: `{h_score}:{a_score}`\n\n"
+                               f"🤖 {analysis}")
                         
                         await bot.send_message(CHANNEL_ID, msg)
-                        sent_signals.add(match_id)
-                        logger.info(f"Отправлен: {h_team}")
+                        sent_signals.add(mid)
+                    except:
+                        continue
 
         except Exception as e:
-            logger.error(f"Ошибка: {e}")
+            logger.error(f"Ошибка в Amvera: {e}")
 
 async def main():
-    await bot.send_message(CHANNEL_ID, "🚀 **БЕЗЛИМИТНЫЙ РЕЖИМ ВКЛЮЧЕН!**\nТеперь кидаю вообще все лайв-матчи без разбора.")
+    await bot.send_message(CHANNEL_ID, "🛠 **Amvera: Прямой поиск матчей запущен.**\nИгнорирую фильтры, ищу всё, что в лайве!")
     while True:
-        await check_all_matches()
-        await asyncio.sleep(60) # Проверка каждую минуту
+        await check()
+        await asyncio.sleep(60)
 
 if __name__ == "__main__":
     asyncio.run(main())
