@@ -4,7 +4,6 @@ import os
 import logging
 from aiogram import Bot
 
-# Настройка логирования для Amvera
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s')
 logger = logging.getLogger(__name__)
 
@@ -12,31 +11,35 @@ TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHANNEL_ID = os.getenv("CHANNEL_ID")
 bot = Bot(token=TOKEN)
 
-# Список возможных адресов API (зеркала)
-FONBET_URLS = [
+# Прямые ссылки на API
+URLS = [
+    "https://line12.bkfon-resources.com/live/eventsList",
     "https://line01i.bkfon-resources.com/live/eventsList",
-    "https://line02i.bkfon-resources.com/live/eventsList",
-    "https://line03i.bkfon-resources.com/live/eventsList"
+    "https://193.106.173.131/live/eventsList" # Прямой IP на крайний случай
 ]
 
 async def scan_to_channel():
-    logger.info("Начинаю попытку подключения к российскому API...")
+    logger.info("Попытка получить список лиг через резервные каналы...")
     
-    # Отключаем проверку SSL для стабильности на облачных серверах
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36"
+    }
+    
+    # Отключаем проверку SSL для пробива через облачные фильтры
     connector = aiohttp.TCPConnector(ssl=False)
     
-    async with aiohttp.ClientSession(connector=connector) as session:
-        for url in FONBET_URLS:
+    async with aiohttp.ClientSession(connector=connector, headers=headers) as session:
+        for url in URLS:
             try:
-                logger.info(f"Пробую адрес: {url}")
-                async with session.get(url, timeout=10) as resp:
+                logger.info(f"Запрос к: {url}")
+                async with session.get(url, timeout=15) as resp:
                     if resp.status == 200:
                         data = await resp.json()
                         
-                        text = "🏒 **АКТУАЛЬНЫЕ ХОККЕЙНЫЕ ЛИГИ (FONBET):**\n\n"
+                        text = "🏒 **АКТУАЛЬНЫЕ ХОККЕЙНЫЕ ЛИГИ:**\n\n"
                         found = False
                         
-                        # Собираем данные
+                        # Собираем все турниры из раздела Хоккей
                         for sport in data.get('sports', []):
                             name = sport.get('name', '').lower()
                             if 'хоккей' in name and 'настольный' not in name:
@@ -46,20 +49,19 @@ async def scan_to_channel():
                                 found = True
                         
                         if not found:
-                            text = "❌ В данный момент активных хоккейных лиг не найдено."
+                            text = "❌ В лайве сейчас нет хоккейных лиг."
                         else:
-                            text += "\n\n**Пришли мне ID лиг, которые хочешь отслеживать!**"
+                            text += "\n\n**Пришли мне ID лиг из списка выше!**"
 
                         await bot.send_message(CHANNEL_ID, text, parse_mode="Markdown")
-                        logger.info("Успех! Список отправлен в канал.")
-                        return # Выходим после успешной отправки
+                        logger.info("СПИСОК ОТПРАВЛЕН В КАНАЛ!")
+                        return 
                     else:
-                        logger.warning(f"Сервер ответил статусом: {resp.status}")
+                        logger.warning(f"Сервер {url} ответил: {resp.status}")
             except Exception as e:
-                logger.error(f"Не удалось подключиться к {url}: {e}")
+                logger.error(f"Ошибка при обращении к {url}: {e}")
         
-        logger.error("Все попытки подключения провалились.")
+        logger.error("Все адреса недоступны.")
 
 if __name__ == "__main__":
-    # Запускаем один раз для проверки
     asyncio.run(scan_to_channel())
