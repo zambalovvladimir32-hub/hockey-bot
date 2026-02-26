@@ -4,135 +4,67 @@ import logging
 import os
 from datetime import datetime, timedelta, timezone
 from aiogram import Bot
-from openai import AsyncOpenAI
 
-# Настройка логирования
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# Ключи (берутся из переменных окружения Amvera)
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHANNEL_ID = os.getenv("CHANNEL_ID")
 API_KEY = os.getenv("FOOTBALL_API_KEY")
-OPENAI_KEY = os.getenv("OPENAI_API_KEY")
-GROK_KEY = os.getenv("GROK_API_KEY")
-
-gpt_client = AsyncOpenAI(api_key=OPENAI_KEY)
-grok_client = AsyncOpenAI(api_key=GROK_KEY, base_url="https://api.x.ai/v1")
 bot = Bot(token=TOKEN)
 
 HOST = 'v1.hockey.api-sports.io'
 HEADERS = {'x-rapidapi-key': API_KEY, 'x-rapidapi-host': HOST}
 
-# ТВОЙ СПИСОК ЛИГ (РФ, СНГ, Словакия)
+# Твой список ID
 ALLOWED_LEAGUES = [57, 40, 51, 41, 120, 110, 66, 114, 182, 185, 17]
 
-sent_signals = set()
-
-async def get_ai_analysis(teams, score, league, status):
-    prompt = f"Хоккей. {status}. Матч: {teams} ({league}). Счет: {score}. Оцени вероятность ТБ 4.5. Один вердикт (15 слов)."
-    async def call_ai(client, model):
-        try:
-            res = await client.chat.completions.create(
-                model=model, 
-                messages=[{"role": "user", "content": prompt}], 
-                max_tokens=100
-            )
-            return res.choices[0].message.content
-        except Exception as e:
-            return "Анализ временно недоступен."
-    return await asyncio.gather(call_ai(gpt_client, "gpt-4o"), call_ai(grok_client, "grok-beta"))
-
-async def check_games():
-    # Текущее время по Чите (UTC+9)
-    now_chita = datetime.now(timezone.utc) + timedelta(hours=9)
+async def check_all_live_leagues():
+    logger.info("=== ЗАПУСК ДИАГНОСТИКИ ВСЕХ ЛИГ В LIVE ===")
     
-    # Запрос игр на сегодня (по серверному времени API обычно +3 UTC)
+    # Берем матчи за сегодня
     today = (datetime.now(timezone.utc) + timedelta(hours=3)).strftime('%Y-%m-%d')
     url = f"https://{HOST}/games?date={today}"
     
-    # Настройки для стабильного соединения
-    connector = aiohttp.TCPConnector(ssl=False, keepalive_timeout=30)
-    timeout = aiohttp.ClientTimeout(total=30)
-    
-    async with aiohttp.ClientSession(connector=connector, timeout=timeout) as session:
+    connector = aiohttp.TCPConnector(ssl=False)
+    async with aiohttp.ClientSession(connector=connector) as session:
         try:
             async with session.get(url, headers=HEADERS) as resp:
-                if resp.status != 200:
-                    logger.error(f"Ошибка API: статус {resp.status}")
-                    return
-
                 data = await resp.json()
                 games = data.get('response', [])
                 
                 if not games:
-                    logger.info("Игр на сегодня в API пока нет.")
+                    logger.info("В API сейчас вообще нет матчей.")
                     return
 
+                logger.info(f"Найдено матчей в базе: {len(games)}")
+                
                 for game in games:
-                    gid = game['id']
-                    if gid in sent_signals:
-                        continue
+                    l_id = game['league']['id']
+                    l_name = game['league']['name']
+                    status = game['status']['short']
+                    teams = f"{game['teams']['home']['name']} - {game['teams']['away']['name']}"
+                    score = f"{game['scores']['home']}:{game['scores']['away']}"
                     
-                    # 1. ФИЛЬТР ПО ЛИГЕ
-                    l_id = game.get('league', {}).get('id')
-                    if l_id not in ALLOWED_LEAGUES:
-                        continue
+                    # Помечаем те, что входят в наш список
+                    match_marker = "⭐⭐⭐ [В ТВОЕМ СПИСКЕ]" if l_id in ALLOWED_LEAGUES else "[Другая лига]"
                     
-                    teams = f"{game['teams']['home']['name']} — {game['teams']['away']['name']}"
-                    status_short = str(game['status']['short']).upper()
-                    status_long = str(game['status']['long']).upper()
-                    
-                    scores = game['scores']
-                    h_s = scores.get('home', 0) if scores.get('home') is not None else 0
-                    a_s = scores.get('away', 0) if scores.get('away') is not None else 0
-                    total_goals = h_s + a_s
+                    # Выводим инфу по каждому матчу в консоль Amvera
+                    logger.info(f"{match_marker} ID: {l_id} | Лига: {l_name} | Матч: {teams} | Статус: {status} | Счет: {score}")
 
-                    # ДИАГНОСТИКА: пишем в логи каждый матч наших лиг
-                    logger.info(f"Проверяю: {teams} | Статус: {status_short} | Счет: {h_s}:{a_s}")
-
-                    # 2. ГИБКИЙ ФИЛЬТР (УСЛОВИЯ СИГНАЛА)
-                    # А) Это 1-й период или перерыв (неважно какой счет)
-                    is_early_game = any(x in status_short for x in ['P1', 'IP', 'INT', '1ST']) or "FIRST" in status_long
-                    # Б) Это 2-й период, но счет все еще 0:0
-                    is_dry_second = (status_short == 'P2' or 'SECOND' in status_long) and total_goals == 0
-
-                    if is_early_game or is_dry_second:
-                        # Доп. условие на счет для 1-го периода (чтобы не спамить при 3:3)
-                        if total_goals <= 3: 
-                            league_name = game['league']['name']
-                            logger.info(f"!!! ПОДХОДИТ ПОД СИГНАЛ: {teams}")
-                            
-                            gpt_res, grok_res = await get_ai_analysis(teams, f"{h_s}:{a_s}", league_name, game['status']['long'])
-                            
-                            msg = (
-                                f"🏒 **LIVE СИГНАЛ: МОНИТОРИНГ**\n\n"
-                                f"⚔️ **{teams}**\n"
-                                f"🏆 {league_name}\n"
-                                f"📊 Счет: `{h_s}:{a_s}`\n"
-                                f"⏱ Статус: {game['status']['long']}\n\n"
-                                f"🤖 **GPT-4o:** {gpt_res}\n\n"
-                                f"🦾 **GROK:** {grok_res}"
-                            )
-                            
-                            try:
-                                await bot.send_message(CHANNEL_ID, msg, parse_mode="Markdown")
-                                sent_signals.add(gid)
-                                logger.info(f"Сигнал отправлен в канал по матчу {gid}")
-                            except Exception as send_error:
-                                logger.error(f"Ошибка отправки в TG: {send_error}")
+                    # Если это наша лига и она в лайве — отправим тестовое сообщение в канал
+                    if l_id in ALLOWED_LEAGUES and status not in ['FT', 'NS', 'AOT', 'CANC']:
+                        test_msg = f"🔍 ТЕСТ: Вижу матч из списка!\nЛига ID: {l_id}\nЛига: {l_name}\nМатч: {teams}\nСтатус: {status}"
+                        await bot.send_message(CHANNEL_ID, test_msg)
 
         except Exception as e:
-            logger.error(f"Ошибка в основном цикле: {e}")
+            logger.error(f"Ошибка диагностики: {e}")
 
 async def main():
-    logger.info("=== БОТ ЗАПУЩЕН (ТОТАЛЬНЫЙ МОНИТОРИНГ РФ + СЛОВАКИЯ) ===")
-    logger.info(f"Отслеживаем лиги: {ALLOWED_LEAGUES}")
-    
+    logger.info("Бот-детектор ID запущен.")
     while True:
-        await check_games()
-        # Пауза 3 минуты (180 сек) — баланс скорости и лимитов
-        await asyncio.sleep(180)
+        await check_all_live_leagues()
+        await asyncio.sleep(300) # Проверка раз в 5 минут
 
 if __name__ == "__main__":
     asyncio.run(main())
