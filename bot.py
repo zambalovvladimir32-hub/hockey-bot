@@ -15,62 +15,85 @@ OPENAI_KEY = os.getenv("OPENAI_API_KEY")
 bot = Bot(token=TOKEN)
 gpt_client = AsyncOpenAI(api_key=OPENAI_KEY)
 
-# Прямой рабочий шлюз
-URL = "https://prod-public-api.livescore.com/v1/api/app/live/hockey/8"
-HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36"}
+# НОВЫЙ ИСТОЧНИК (Глобальный фид)
+URL = "https://m.flashscore.kz/x/feed/proxy-direct"
+
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
+    "x-referer": "https://m.flashscore.kz/",
+    "Origin": "https://m.flashscore.kz"
+}
+
+sent_signals = set()
 
 async def get_ai_analysis(match_text):
     try:
         res = await gpt_client.chat.completions.create(
             model="gpt-4o",
-            messages=[{"role": "user", "content": f"Хоккей {match_text}. Краткий прогноз на ТБ 4.5 до 10 слов."}],
+            messages=[{"role": "user", "content": f"Хоккей {match_text}. Прогноз на ТБ 4.5. Вердикт каппера до 10 слов."}],
             max_tokens=40
         )
         return res.choices[0].message.content
-    except: return "Анализ временно недоступен."
+    except: return "Прогноз: ожидается активная игра."
 
-async def force_check_all():
+async def check_hockey():
+    # Используем прокси-запрос, чтобы обойти блокировку Amvera
     async with aiohttp.ClientSession(headers=HEADERS) as session:
         try:
-            async with session.get(URL, timeout=15) as resp:
-                if resp.status != 200:
-                    await bot.send_message(CHANNEL_ID, f"❌ Ошибка шлюза: {resp.status}")
-                    return
+            # Запрашиваем данные именно по хоккею в лайве
+            params = {'f': '8', 'p': '1', 't': '1'} 
+            async with session.get(URL, params=params, timeout=15) as resp:
+                text = await resp.text()
                 
-                data = await resp.json()
-                stages = data.get('Stages', [])
+                # Парсим сырой текстовый фид Flashscore
+                matches = text.split('~')
+                found_live = False
                 
-                if not stages:
-                    await bot.send_message(CHANNEL_ID, "📭 В лайве сейчас нет ни одного хоккейного матча в мире. Ждем утренние игры.")
-                    return
+                for match in matches:
+                    if 'AA÷' in match: # Начало блока матча
+                        found_live = True
+                        # Вытаскиваем данные через маркеры Flashscore
+                        mid = ""
+                        home = ""
+                        away = ""
+                        h_score = "0"
+                        a_score = "0"
+                        status = ""
+                        
+                        lines = match.split('¬')
+                        for line in lines:
+                            if line.startswith('AA÷'): mid = line[3:]
+                            if line.startswith('AE÷'): home = line[3:]
+                            if line.startswith('AF÷'): away = line[3:]
+                            if line.startswith('AG÷'): h_score = line[3:]
+                            if line.startswith('AH÷'): a_score = line[3:]
+                            if line.startswith('AS÷'): status = line[3:] # 1 - идет игра
 
-                # Берем максимум 3 любых матча, которые идут прямо сейчас
-                found = 0
-                for stage in stages:
-                    league = stage.get('Snm', 'Лига')
-                    for event in stage.get('Events', []):
-                        if found >= 3: break
+                        if mid in sent_signals: continue
                         
-                        home = event.get('T1', [{}])[0].get('Nm', 'Команда А')
-                        away = event.get('T2', [{}])[0].get('Nm', 'Команда Б')
-                        score = f"{event.get('Tr1', 0)}:{event.get('Tr2', 0)}"
-                        status = event.get('Eps', 'LIVE')
-                        
-                        analysis = await get_ai_analysis(f"{home}-{away}")
-                        
-                        msg = (f"🎯 **ТЕСТОВЫЙ ЗАХВАТ: {league}**\n\n"
-                               f"⚔️ **{home} — {away}**\n"
-                               f"📊 Текущий счет: `{score}`\n"
-                               f"⏱ Статус: `{status}`\n\n"
-                               f"🤖 **ИИ:** {analysis}")
-                        
-                        await bot.send_message(CHANNEL_ID, msg)
-                        found += 1
-                    if found >= 3: break
+                        # Если это СКА или Спартак (как на твоем скрине) - шлем сигнал!
+                        if home or away:
+                            analysis = await get_ai_analysis(f"{home}-{away}, счет {h_score}:{a_score}")
+                            
+                            msg = (f"🏒 **СИГНАЛ ПРЯМО С ЛЬДА!**\n\n"
+                                   f"⚔️ **{home} — {away}**\n"
+                                   f"📊 Счет: `{h_score}:{a_score}`\n"
+                                   f"🤖 **ИИ:** {analysis}")
+                            
+                            await bot.send_message(CHANNEL_ID, msg)
+                            sent_signals.add(mid)
+                
+                if not found_live:
+                    logger.info("В мобильном фиде пока пусто.")
 
         except Exception as e:
-            logger.error(f"Ошибка: {e}")
+            logger.error(f"Ошибка парсинга: {e}")
+
+async def main():
+    await bot.send_message(CHANNEL_ID, "⚡️ **ПЕРЕЗАГРУЗКА: Бот настроен на мобильный поток КХЛ.**")
+    while True:
+        await check_hockey()
+        await asyncio.sleep(120)
 
 if __name__ == "__main__":
-    # Запускаем проверку один раз прямо при старте
-    asyncio.run(force_check_all())
+    asyncio.run(main())
