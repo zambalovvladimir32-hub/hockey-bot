@@ -3,7 +3,7 @@ import aiohttp
 import logging
 import os
 from datetime import datetime, timedelta, timezone
-from aiogram import Bot, Dispatcher
+from aiogram import Bot
 from openai import AsyncOpenAI
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -23,7 +23,7 @@ bot = Bot(token=TOKEN)
 HOST = 'v1.hockey.api-sports.io'
 HEADERS = {'x-rapidapi-key': API_KEY, 'x-rapidapi-host': HOST}
 
-# СПИСОК РАЗРЕШЕННЫХ ЛИГ (РФ + СНГ + Словакия)
+# ТВОИ КОДЫ ЛИГ
 ALLOWED_LEAGUES = [57, 40, 51, 41, 120, 110, 66, 114, 182, 185, 17]
 
 sent_signals = set()
@@ -36,22 +36,6 @@ async def get_ai_analysis(teams, score, league):
             return res.choices[0].message.content
         except: return "Анализ временно недоступен."
     return await asyncio.gather(call_ai(gpt_client, "gpt-4o"), call_ai(grok_client, "grok-beta"))
-
-async def get_shots(game_id):
-    url = f"https://{HOST}/games/statistics?id={game_id}"
-    async with aiohttp.ClientSession() as session:
-        try:
-            async with session.get(url, headers=HEADERS) as resp:
-                data = await resp.json()
-                stats = data.get('response', [])
-                if not stats: return 0
-                total_shots = 0
-                for team_stat in stats:
-                    for s in team_stat.get('statistics', []):
-                        if s.get('type') == 'Shots on Goal':
-                            total_shots += int(s.get('value') or 0)
-                return total_shots
-        except: return 0
 
 async def check_games():
     # Настройка времени (Чита = UTC+9)
@@ -66,7 +50,6 @@ async def check_games():
         is_working = True
 
     if not is_working:
-        logger.info(f"Спим. Чита: {now_chita.strftime('%H:%M')}. Старт в 16:20.")
         return
 
     today = (datetime.now(timezone.utc) + timedelta(hours=3)).strftime('%Y-%m-%d')
@@ -82,44 +65,45 @@ async def check_games():
                     gid = game['id']
                     if gid in sent_signals: continue
                     
-                    # НОВОЕ: Фильтр по ID лиги
                     league_id = game.get('league', {}).get('id')
                     if league_id not in ALLOWED_LEAGUES:
                         continue
                     
                     status_short = game['status']['short']
-                    if status_short == 'P1':
+                    # КОРРЕКТИРОВКА: Ловим 1-й период (P1) и перерыв (может быть IP или Intermission)
+                    if status_short in ['P1', 'IP', 'INT']:
                         scores = game['scores']
                         h_s = scores.get('home', 0) or 0
                         a_s = scores.get('away', 0) or 0
                         
+                        # Фильтр: счет 0:0 или 1:0/0:1
                         if (h_s + a_s) <= 1:
-                            shots = await get_shots(gid)
+                            teams = f"{game['teams']['home']['name']} — {game['teams']['away']['name']}"
+                            league_name = game['league']['name']
                             
-                            if shots >= 8:
-                                teams = f"{game['teams']['home']['name']} — {game['teams']['away']['name']}"
-                                league_name = game['league']['name']
-                                
-                                logger.info(f"СИГНАЛ: {teams} (Броски: {shots})")
-                                gpt_res, grok_res = await get_ai_analysis(teams, f"{h_s}:{a_s}", league_name)
-                                
-                                msg = (
-                                    f"🏒 **СИГНАЛ: ТОТАЛ БОЛЬШЕ (LIVE)**\n\n"
-                                    f"⚔️ {teams}\n"
-                                    f"🏆 {league_name} (ID: {league_id})\n"
-                                    f"⏰ 1-й период | Счет: {h_s}:{a_s}\n"
-                                    f"🎯 Броски в створ: {shots}\n\n"
-                                    f"🤖 **GPT-4o:** {gpt_res}\n\n"
-                                    f"🦾 **GROK:** {grok_res}"
-                                )
-                                await bot.send_message(CHANNEL_ID, msg)
-                                sent_signals.add(gid)
+                            # Уточняем статус для сообщения
+                            display_status = "1-й период" if status_short == 'P1' else "ПЕРЕРЫВ (после 1-го)"
+                            
+                            logger.info(f"СИГНАЛ: {teams} ({display_status})")
+                            gpt_res, grok_res = await get_ai_analysis(teams, f"{h_s}:{a_s}", league_name)
+                            
+                            msg = (
+                                f"🏒 **СИГНАЛ: МОНИТОРИНГ**\n\n"
+                                f"⚔️ {teams}\n"
+                                f"🏆 {league_name}\n"
+                                f"⏰ Статус: {display_status}\n"
+                                f"📊 Счет: {h_s}:{a_s}\n\n"
+                                f"🤖 **GPT-4o:** {gpt_res}\n\n"
+                                f"🦾 **GROK:** {grok_res}"
+                            )
+                            await bot.send_message(CHANNEL_ID, msg)
+                            sent_signals.add(gid)
 
         except Exception as e:
             logger.error(f"Ошибка цикла: {e}")
 
 async def main():
-    logger.info("Бот запущен. Мониторинг выбранных лиг активен!")
+    logger.info("Бот запущен. Расширенный мониторинг 1-го периода активен!")
     while True:
         await check_games()
         await asyncio.sleep(120)
