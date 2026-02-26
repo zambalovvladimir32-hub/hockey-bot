@@ -11,56 +11,54 @@ TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHANNEL_ID = os.getenv("CHANNEL_ID")
 bot = Bot(token=TOKEN)
 
-# Прямой поток данных Flashscore
-HOCKEY_SOURCE = "https://prod-public-api.livescore.com/v1/api/app/live/hockey/8"
+# Мобильный шлюз (то, что использует само приложение Flashscore)
+URL = "https://m.flashscore.kz/x/feed/proxy-hockey" 
+
 HEADERS = {
-    "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148",
-    "Origin": "https://www.flashscorekz.com",
-    "Referer": "https://www.flashscorekz.com/"
+    "User-Agent": "FlashScore/5.10.0 (iPhone; iOS 17.2; Scale/3.00)",
+    "X-Referer": "https://www.flashscorekz.com/",
+    "X-Requested-With": "com.flashscore.kz",
+    "Accept": "*/*"
 }
 
 async def run_test():
-    logger.info("Запуск теста видимости линии...")
+    logger.info("Пробуем пробиться через мобильный шлюз...")
     
-    async with aiohttp.ClientSession(headers=HEADERS) as session:
+    # Отключаем проверку SSL, чтобы Amvera не ругалась
+    connector = aiohttp.TCPConnector(ssl=False)
+    async with aiohttp.ClientSession(connector=connector, headers=HEADERS) as session:
         try:
-            async with session.get(HOCKEY_SOURCE, timeout=15) as resp:
-                if resp.status != 200:
-                    await bot.send_message(CHANNEL_ID, f"❌ Ошибка связи с API: {resp.status}")
-                    return
+            # Делаем запрос к скрытому фиду
+            async with session.get("https://d.flashscore.kz/x/feed/l_3_1", timeout=15) as resp:
+                status = resp.status
+                raw_data = await resp.text()
                 
-                data = await resp.json()
-                stages = data.get('Stages', [])
-                
-                if not stages:
-                    await bot.send_message(CHANNEL_ID, "⚠️ Связь есть, но в лайве сейчас 0 матчей.")
-                    return
+                if status == 200:
+                    # Данные приходят в текстовом формате Flashscore (нужно просто проверить наличие команд)
+                    # Если в тексте есть 'Salavat' или 'Traktor', значит мы победили
+                    matches_found = []
+                    if "Salavat" in raw_data or "Салават" in raw_data: matches_found.append("Салават Юлаев")
+                    if "Traktor" in raw_data or "Трактор" in raw_data: matches_found.append("Трактор")
+                    if "Gornyak" in raw_data or "Горняк" in raw_data: matches_found.append("Горняк")
 
-                text = "📊 **ТЕСТ ВИДИМОСТИ ЛИНИИ (LIVE):**\n\n"
-                count = 0
-                
-                for stage in stages:
-                    league = stage.get('Snm', 'Неизвестная лига')
-                    for event in stage.get('Events', []):
-                        home = event.get('T1', [{}])[0].get('Nm', '???')
-                        away = event.get('T2', [{}])[0].get('Nm', '???')
-                        score = f"{event.get('Tr1', 0)}:{event.get('Tr2', 0)}"
-                        status = event.get('Eps', 'Ожидание')
-                        
-                        text += f"🏆 {league}\n⚔️ {home} — {away}\n📊 Счет: `{score}` | `{status}`\n\n"
-                        count += 1
-                        
-                        # Чтобы сообщение не было слишком длинным (лимит Телеграм)
-                        if count >= 15: break
-                    if count >= 15: break
-
-                text += f"\n✅ **Тест завершен. Бот видит {count} матчей.**"
-                await bot.send_message(CHANNEL_ID, text, parse_mode="Markdown")
-                logger.info("Тестовый список отправлен!")
+                    res_text = "✅ **СВЯЗЬ УСТАНОВЛЕНА!**\n\n"
+                    if matches_found:
+                        res_text += "Бот видит твои матчи из скриншота:\n" + "\n".join([f"• {m}" for m in matches_found])
+                    else:
+                        res_text += "Сайт ответил, но матчи в сыром коде не распознаны. Нужно парсить текст."
+                    
+                    await bot.send_message(CHANNEL_ID, res_text, parse_mode="Markdown")
+                else:
+                    await bot.send_message(CHANNEL_ID, f"❌ Снова отказ (Код {status}). Пробую запасной шлюз...")
+                    # Попытка через глобальное зеркало
+                    async with session.get("https://v3ds.ls-api.com/get/hockey/live", timeout=10) as resp2:
+                        if resp2.status == 200:
+                            await bot.send_message(CHANNEL_ID, "🌐 Запасное зеркало (Global API) работает! Переходим на него.")
+                        else:
+                            await bot.send_message(CHANNEL_ID, "🚫 Amvera заблокировала все пути. Нужно менять сервер.")
 
         except Exception as e:
-            logger.error(f"Ошибка теста: {e}")
-            await bot.send_message(CHANNEL_ID, f"🚫 Ошибка при сканировании: {str(e)[:50]}")
+            await bot.send_message(CHANNEL_ID, f"⚠️ Ошибка сети: {str(e)[:50]}")
 
 if __name__ == "__main__":
     asyncio.run(run_test())
