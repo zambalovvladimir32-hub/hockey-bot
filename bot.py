@@ -2,64 +2,78 @@ import asyncio
 import aiohttp
 import logging
 import os
-from datetime import datetime, timedelta, timezone
-from aiogram import Bot, Dispatcher
-from openai import AsyncOpenAI
+from aiogram import Bot
 
-# Настройка логирования
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# Ключи из переменных Amvera
+# Ключи
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHANNEL_ID = os.getenv("CHANNEL_ID")
-SPORTRADAR_KEY = os.getenv("API_KEY")
-OPENAI_KEY = os.getenv("OPENAI_API_KEY")
-GROK_KEY = os.getenv("GROK_API_KEY")
-
-gpt_client = AsyncOpenAI(api_key=OPENAI_KEY)
-grok_client = AsyncOpenAI(api_key=GROK_KEY, base_url="https://api.x.ai/v1")
+API_KEY = os.getenv("FOOTBALL_API_KEY")
 
 bot = Bot(token=TOKEN)
-dp = Dispatcher()
 
-# ОБНОВЛЕННЫЙ URL ДЛЯ V4 (Global Ice Hockey Base)
-URL = f"https://api.sportradar.us/hockey/trial/v4/en/games/live/summary.json?api_key={SPORTRADAR_KEY}"
+# Ссылка на все LIVE матчи по хоккею
+URL = "https://v1.hockey.api-sports.io/games?live=all"
+HEADERS = {
+    'x-rapidapi-key': API_KEY,
+    'x-rapidapi-host': 'v1.hockey.api-sports.io'
+}
 
-sent_signals = set()
-
-async def get_ai_analysis(teams, score, league):
-    prompt = f"Матч: {teams} ({league}). Текущий счет {score}. Дай краткий прогноз на тотал матча (1 предложение)."
-    async def call_ai(client, model):
-        try:
-            res = await client.chat.completions.create(
-                model=model,
-                messages=[{"role": "user", "content": prompt}],
-                max_tokens=100
-            )
-            return res.choices[0].message.content
-        except Exception as e:
-            logger.error(f"Ошибка AI ({model}): {e}")
-            return "Анализ временно недоступен."
-    
-    return await asyncio.gather(call_ai(gpt_client, "gpt-4o"), call_ai(grok_client, "grok-beta"))
-
-async def check_games():
-    logger.info("--- ЗАПУСК ПРОВЕРКИ API V4 ---")
+async def check_all_games():
+    logger.info("--- ЗАПУСК ПОЛНОГО ТЕСТА ВСЕХ ИГР ---")
     
     async with aiohttp.ClientSession() as session:
         try:
-            async with session.get(URL) as resp:
-                if resp.status == 403:
-                    logger.error("ОШИБКА 403: Доступ запрещен. Проверь активацию ключа или лимиты тарифа.")
-                    return
-                if resp.status != 200:
-                    logger.error(f"Ошибка Sportradar: {resp.status}")
-                    text = await resp.text()
-                    logger.error(f"Ответ сервера: {text}")
-                    return
-                
+            async with session.get(URL, headers=HEADERS) as resp:
+                logger.info(f"Статус API: {resp.status}")
                 data = await resp.json()
+                
+                if data.get('errors'):
+                    error_msg = f"Ошибка API: {data['errors']}"
+                    logger.error(error_msg)
+                    await bot.send_message(CHANNEL_ID, f"❌ {error_msg}")
+                    return
+
+                games = data.get('response', [])
+                
+                if not games:
+                    msg = "В данный момент активных LIVE-игр в API нет."
+                    logger.info(msg)
+                    await bot.send_message(CHANNEL_ID, f"ℹ️ {msg}")
+                    return
+
+                logger.info(f"Найдено игр: {len(games)}. Начинаю публикацию...")
+                
+                await bot.send_message(CHANNEL_ID, f"🚀 **НАЙДЕНО {len(games)} LIVE-ИГР:**")
+
+                for game in games:
+                    teams = f"{game['teams']['home']['name']} — {game['teams']['away']['name']}"
+                    league = game['league']['name']
+                    scores = game['scores']
+                    h_score = scores['home'] if scores['home'] is not None else 0
+                    a_score = scores['away'] if scores['away'] is not None else 0
+                    status = game['status']['long']
+
+                    text = (
+                        f"🏒 **{teams}**\n"
+                        f"🏆 {league}\n"
+                        f"📊 Счет: {h_score}:{a_score}\n"
+                        f"⏱ Статус: {status}\n"
+                        f"----------------------------"
+                    )
+                    
+                    await bot.send_message(CHANNEL_ID, text)
+                    logger.info(f"Опубликован матч: {teams}")
+                    await asyncio.sleep(0.5) # Пауза, чтобы телега не забанила за спам
+
+                await bot.send_message(CHANNEL_ID, "✅ Весь список LIVE-игр выгружен.")
+
         except Exception as e:
-            logger.error(f"Ошибка сети: {e}")
-            return
+            err = f"Критическая ошибка: {e}"
+            logger.error(err)
+            await bot.send_message(CHANNEL_ID, f"⚠️ {err}")
+
+if __name__ == "__main__":
+    asyncio.run(check_all_games())
