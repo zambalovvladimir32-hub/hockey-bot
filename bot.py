@@ -23,6 +23,9 @@ bot = Bot(token=TOKEN)
 HOST = 'v1.hockey.api-sports.io'
 HEADERS = {'x-rapidapi-key': API_KEY, 'x-rapidapi-host': HOST}
 
+# СПИСОК РАЗРЕШЕННЫХ ЛИГ (РФ + СНГ + Словакия)
+ALLOWED_LEAGUES = [57, 40, 51, 41, 120, 110, 66, 114, 182, 185, 17]
+
 sent_signals = set()
 
 async def get_ai_analysis(teams, score, league):
@@ -35,7 +38,6 @@ async def get_ai_analysis(teams, score, league):
     return await asyncio.gather(call_ai(gpt_client, "gpt-4o"), call_ai(grok_client, "grok-beta"))
 
 async def get_shots(game_id):
-    # Получение статистики бросков (shots on goal)
     url = f"https://{HOST}/games/statistics?id={game_id}"
     async with aiohttp.ClientSession() as session:
         try:
@@ -43,7 +45,6 @@ async def get_shots(game_id):
                 data = await resp.json()
                 stats = data.get('response', [])
                 if not stats: return 0
-                # Суммируем броски обеих команд
                 total_shots = 0
                 for team_stat in stats:
                     for s in team_stat.get('statistics', []):
@@ -57,7 +58,6 @@ async def check_games():
     now_chita = datetime.now(timezone.utc) + timedelta(hours=9)
     current_time = now_chita.time()
     
-    # Работаем с 16:20 до 03:00 (Читинское время)
     start_time = datetime.strptime("16:20", "%H:%M").time()
     end_time = datetime.strptime("03:00", "%H:%M").time()
     
@@ -82,29 +82,31 @@ async def check_games():
                     gid = game['id']
                     if gid in sent_signals: continue
                     
+                    # НОВОЕ: Фильтр по ID лиги
+                    league_id = game.get('league', {}).get('id')
+                    if league_id not in ALLOWED_LEAGUES:
+                        continue
+                    
                     status_short = game['status']['short']
-                    # Фильтр: только 1-й период
                     if status_short == 'P1':
                         scores = game['scores']
                         h_s = scores.get('home', 0) or 0
                         a_s = scores.get('away', 0) or 0
                         
-                        # Фильтр: счет 0:0 или 1:0/0:1
                         if (h_s + a_s) <= 1:
                             shots = await get_shots(gid)
                             
-                            # Фильтр: Броски 8+
                             if shots >= 8:
                                 teams = f"{game['teams']['home']['name']} — {game['teams']['away']['name']}"
-                                league = game['league']['name']
+                                league_name = game['league']['name']
                                 
                                 logger.info(f"СИГНАЛ: {teams} (Броски: {shots})")
-                                gpt_res, grok_res = await get_ai_analysis(teams, f"{h_s}:{a_s}", league)
+                                gpt_res, grok_res = await get_ai_analysis(teams, f"{h_s}:{a_s}", league_name)
                                 
                                 msg = (
                                     f"🏒 **СИГНАЛ: ТОТАЛ БОЛЬШЕ (LIVE)**\n\n"
                                     f"⚔️ {teams}\n"
-                                    f"🏆 {league}\n"
+                                    f"🏆 {league_name} (ID: {league_id})\n"
                                     f"⏰ 1-й период | Счет: {h_s}:{a_s}\n"
                                     f"🎯 Броски в створ: {shots}\n\n"
                                     f"🤖 **GPT-4o:** {gpt_res}\n\n"
@@ -117,10 +119,10 @@ async def check_games():
             logger.error(f"Ошибка цикла: {e}")
 
 async def main():
-    logger.info("Бот запущен и следит за хоккеем!")
+    logger.info("Бот запущен. Мониторинг выбранных лиг активен!")
     while True:
         await check_games()
-        await asyncio.sleep(120) # Проверка каждые 2 минуты
+        await asyncio.sleep(120)
 
 if __name__ == "__main__":
     asyncio.run(main())
