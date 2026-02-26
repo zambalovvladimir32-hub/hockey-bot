@@ -2,78 +2,82 @@ import asyncio
 import aiohttp
 import logging
 import os
+from datetime import datetime, timezone, timedelta
 from aiogram import Bot
 
+# Настройка логов
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
+# Данные из Amvera
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHANNEL_ID = os.getenv("CHANNEL_ID")
 API_KEY = os.getenv("FOOTBALL_API_KEY")
 
 bot = Bot(token=TOKEN)
 
-# Основной хост для хоккея
+# Хост для хоккея
 HOST = 'v1.hockey.api-sports.io'
 HEADERS = {
     'x-rapidapi-key': API_KEY,
     'x-rapidapi-host': HOST
 }
 
-async def get_games(session, url):
-    async with session.get(url, headers=HEADERS) as resp:
-        return await resp.json()
-
-async def check_all_games():
-    logger.info("--- ЗАПУСК ЖЕСТКОГО ТЕСТА LIVE ИГР ---")
+async def check_live_games():
+    # Получаем сегодняшнюю дату (МСК)
+    today = (datetime.now(timezone.utc) + timedelta(hours=3)).strftime('%Y-%m-%d')
+    url = f"https://{HOST}/games?date={today}"
+    
+    logger.info(f"--- ЗАПРОС ИГР НА СЕГОДНЯ: {today} ---")
     
     async with aiohttp.ClientSession() as session:
-        # Пробуем разные варианты запроса лайва, которые бывают у этого API
-        urls = [
-            f"https://{HOST}/games?live=all",
-            f"https://{HOST}/games?live=1"
-        ]
-        
-        data = None
-        for url in urls:
-            logger.info(f"Пробую URL: {url}")
-            res = await get_games(session, url)
-            if res.get('response'):
-                data = res
-                break
-        
-        if not data or not data.get('response'):
-            error_info = data.get('errors') if data else "Нет ответа"
-            msg = f"API не отдает LIVE. Ошибка: {error_info}"
-            logger.error(msg)
-            await bot.send_message(CHANNEL_ID, f"❌ {msg}\n(Возможно, в бесплатном тарифе хоккея лайв ограничен)")
-            return
+        try:
+            async with session.get(url, headers=HEADERS) as resp:
+                data = await resp.json()
+                
+                if data.get('errors'):
+                    logger.error(f"Ошибка API: {data['errors']}")
+                    return
 
-        games = data['response']
-        logger.info(f"Найдено LIVE игр: {len(games)}")
-        await bot.send_message(CHANNEL_ID, f"🔥 **ЕСТЬ КОНТАКТ! ВИЖУ {len(games)} ИГР В ЛАЙВЕ:**")
+                all_games = data.get('response', [])
+                if not all_games:
+                    logger.info("На сегодня матчей в базе не найдено.")
+                    return
 
-        for game in games:
-            home = game['teams']['home']['name']
-            away = game['teams']['away']['name']
-            league = game['league']['name']
-            
-            # В хоккее счет лежит в 'scores'
-            s = game.get('scores', {})
-            h_s = s.get('home', 0) if s.get('home') is not None else 0
-            a_s = s.get('away', 0) if s.get('away') is not None else 0
-            
-            # Период
-            status = game.get('status', {}).get('short', 'LIVE')
+                # Фильтруем те, что идут в LIVE (статусы периодов или просто LIVE)
+                live_statuses = ['P1', 'P2', 'P3', 'OT', 'PSS', 'LIVE']
+                live_games = [g for g in all_games if g.get('status', {}).get('short') in live_statuses]
 
-            text = (
-                f"🏒 **{home} — {away}**\n"
-                f"🏆 {league}\n"
-                f"📊 Счет: {h_s}:{a_s}\n"
-                f"⏱ Период: {status}"
-            )
-            await bot.send_message(CHANNEL_ID, text)
-            await asyncio.sleep(0.3)
+                if not live_games:
+                    msg = "В лайве сейчас пусто (в базе API нет активных игр)."
+                    logger.info(msg)
+                    # Можно не спамить в канал, если пусто, либо отправить один раз
+                    return
+
+                await bot.send_message(CHANNEL_ID, f"🏒 **НАЙДЕНО {len(live_games)} ИГР В ЛАЙВЕ:**")
+
+                for game in live_games:
+                    home = game['teams']['home']['name']
+                    away = game['teams']['away']['name']
+                    league = game['league']['name']
+                    status = game['status']['long']
+                    
+                    scores = game.get('scores', {})
+                    h_s = scores.get('home', 0) if scores.get('home') is not None else 0
+                    a_s = scores.get('away', 0) if scores.get('away') is not None else 0
+
+                    text = (
+                        f"🏒 **{home} — {away}**\n"
+                        f"🏆 {league}\n"
+                        f"📊 Счет: {h_s}:{a_s}\n"
+                        f"⏱ Статус: {status}"
+                    )
+                    await bot.send_message(CHANNEL_ID, text)
+                    await asyncio.sleep(0.5)
+
+        except Exception as e:
+            logger.error(f"Ошибка в коде: {e}")
 
 if __name__ == "__main__":
-    asyncio.run(check_all_games())
+    # Запускаем один раз для теста. Для постоянной работы нужно обернуть в while True
+    asyncio.run(check_live_games())
