@@ -2,28 +2,26 @@ def parse(data):
     matches = []
     blocks = data.split('~AA÷')
     
-    # Собираем все найденные статусы для отладки
-    all_statuses = set()
+    # Собираем все найденные статусы для диагностики
+    found_statuses = set()
     
     for block in blocks[1:]:
-        # Вытаскиваем все возможные маркеры периода/статуса
-        tags = {}
-        for t in ['AB', 'AC', 'JS', 'TT', 'NS']:
-            if f'{t}÷' in block:
-                val = block.split(f'{t}÷')[1].split('¬')[0]
-                tags[t] = val
-                all_statuses.add(f"{t}:{val}")
+        # Собираем метки статусов, чтобы понять логику Flashscore
+        for tag in ['TT÷', 'JS÷', 'NS÷', 'AB÷']:
+            if tag in block:
+                val = block.split(tag)[1].split('¬')[0]
+                found_statuses.add(f"{tag}{val}")
 
-        # УСЛОВИЕ: Ищем 2-й период
-        # В хоккее это обычно JS÷2 или TT÷2, иногда при AB÷3 (Live)
-        is_live = tags.get('AB') == '3'
-        is_second_period = tags.get('JS') == '2' or tags.get('TT') == '2'
-
-        if is_second_period:
+        # Проверяем все возможные варианты 2-го периода
+        # В хоккее часто используется JS÷2 или TT÷2 при AB÷3 (Live)
+        is_live = 'AB÷3' in block
+        is_second_period = any(x in block for x in ['TT÷2', 'JS÷2', 'NS÷2'])
+        
+        if is_second_period and is_live:
             try:
                 home = block.split('AE÷')[1].split('¬')[0]
                 away = block.split('AF÷')[1].split('¬')[0]
-                # Счет (если есть)
+                # Счет
                 s_h = block.split('AG÷')[1].split('¬')[0] if 'AG÷' in block else '0'
                 s_a = block.split('AH÷')[1].split('¬')[0] if 'AH÷' in block else '0'
                 
@@ -32,7 +30,7 @@ def parse(data):
                 continue
     
     if not matches:
-        # Если пусто, пишем в лог, какие вообще статусы есть в данных
-        logger.info(f"🧪 В данных найдены статусы: {sorted(list(all_statuses))}")
+        # Эта строчка в логах Railway скажет нам правду
+        logger.info(f"🧪 Диагностика статусов: {list(found_statuses)}")
     
     return matches
