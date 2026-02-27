@@ -12,50 +12,54 @@ TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHANNEL_ID = os.getenv("CHANNEL_ID")
 bot = Bot(token=TOKEN)
 
-# Ультимативный API эндпоинт (JSON формат)
-URL = "https://m.flashscore.ru/x/api/v1/live-matches/hockey"
+# Пробуем альтернативный легкий фид
+URL = "https://core-sport.rambler.ru/v1/export/free/livescore?project=sport&category=hockey"
 
 HEADERS = {
-    "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 15_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.0 Mobile/15E148 Safari/604.1",
-    "X-Requested-With": "XMLHttpRequest",
-    "Accept": "application/json"
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
+    "Accept": "application/json",
+    "Origin": "https://sport.rambler.ru",
+    "Referer": "https://sport.rambler.ru/"
 }
 
-async def ultimate_check():
+async def check_hockey():
     async with aiohttp.ClientSession(headers=HEADERS) as session:
         try:
-            logger.info("--- УЛЬТИМАТИВНЫЙ ПОИСК (JSON API) ---")
+            logger.info("--- ПРОВЕРКА ЧЕРЕЗ RAMBLER-SPORT (ВХЛ/КХЛ) ---")
             async with session.get(URL, timeout=15) as resp:
-                if resp.status == 200:
-                    data = await resp.json()
-                    matches = data.get('data', [])
-                    found_vhl = False
+                if resp.status != 200:
+                    logger.error(f"Сервер послал нас: {resp.status}")
+                    return
+
+                data = await resp.json()
+                # Рамблер обычно отдает ВХЛ без проблем
+                matches = data.get('matches', [])
+                
+                found = 0
+                for m in matches:
+                    found += 1
+                    t1 = m.get('home_team', {}).get('name', '???')
+                    t2 = m.get('away_team', {}).get('name', '???')
+                    score = f"{m.get('home_score', 0)}:{m.get('away_score', 0)}"
+                    status = str(m.get('status', '')) # Ищем 2-й период
                     
-                    for match in matches:
-                        t1 = match.get('home_name', '')
-                        t2 = match.get('away_name', '')
-                        score = f"{match.get('home_score', '0')}:{match.get('away_score', '0')}"
-                        status = match.get('status_type', '') # Период
-                        
-                        logger.info(f"ВИЖУ: {t1} {score} {t2} (Статус: {status})")
-                        
-                        if "Norilsk" in t1 or "Yugra" in t2 or "Норильск" in t1:
-                            found_vhl = True
-                            msg = f"🎯 **МАТЧ НАЙДЕН!**\n🏔 {t1} {score} {t2}\n⏱ Статус: {status}\n⚡️ Связь установлена!"
-                            await bot.send_message(CHANNEL_ID, msg)
-                    
-                    if not found_vhl:
-                        logger.warning("Норильск отсутствует в JSON-фиде. В линии только зарубежные лиги?")
-                else:
-                    logger.error(f"Ошибка API: {resp.status}")
-                    
+                    logger.info(f"ВИЖУ: {t1} {score} {t2} (Период: {status})")
+
+                    # Если в статусе есть цифра 2 или слово '2-й'
+                    if "2" in status or "2nd" in status.lower():
+                        msg = f"🏒 **СТРАТЕГИЯ: 2-й ПЕРИОД**\n📊 {t1} {score} {t2}\n✅ Источник: Rambler"
+                        await bot.send_message(CHANNEL_ID, msg)
+
+                if found == 0:
+                    logger.info("Матчей в лайве пока нет.")
+
         except Exception as e:
-            logger.error(f"Ошибка парсинга: {e}")
+            logger.error(f"Ошибка парсера: {e}")
 
 async def main():
-    await bot.send_message(CHANNEL_ID, "🚀 Запуск ультимативного поиска ВХЛ...")
+    await bot.send_message(CHANNEL_ID, "🛠 Запущен бесплатный 'Партизан' (ВХЛ/КХЛ)...")
     while True:
-        await ultimate_check()
+        await check_hockey()
         await asyncio.sleep(60)
 
 if __name__ == "__main__":
