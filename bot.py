@@ -5,6 +5,7 @@ import logging
 import sys
 from aiogram import Bot
 
+# Настройка логирования для Amvera
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s', stream=sys.stdout)
 logger = logging.getLogger(__name__)
 
@@ -13,66 +14,49 @@ CHANNEL_ID = os.getenv("CHANNEL_ID")
 
 bot = Bot(token=TOKEN)
 
-# Прямой IP-шлюз (в обход DNS) и альтернативный адрес
-URL = "https://prod-public-api.livescore.com/v1/api/app/live/hockey/0?MD=1"
+# Поток данных от российского Чемпионата (Hockey Live)
+URL = "https://www.championat.com/stat/live/hockey/" 
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8"
+}
 
 sent_signals = set()
 
 async def check_logic():
-    logger.info("--- СКАНИРОВАНИЕ ЛИНИИ (ОБХОД БЛОКОВ) ---")
-    
-    # Используем заголовки реального мобильного приложения
-    headers = {
-        "User-Agent": "LiveScore/5.3.1 (iPhone; iOS 15.4.1; Scale/3.00)",
-        "X-Requested-With": "com.livescore.app"
-    }
-
-    async with aiohttp.ClientSession(headers=headers) as session:
+    logger.info("--- ПРОВЕРКА ЧЕРЕЗ CHAMPIONAT (РФ) ---")
+    async with aiohttp.ClientSession(headers=HEADERS) as session:
         try:
-            async with session.get(URL, timeout=15) as resp:
+            async with session.get(URL, timeout=20) as resp:
                 if resp.status != 200:
-                    logger.error(f"Доступ ограничен: {resp.status}")
+                    logger.error(f"Чемпионат недоступен: {resp.status}")
                     return
                 
-                data = await resp.json()
-                total = 0
+                html = await resp.text()
                 
-                for stage in data.get('Stages', []):
-                    league = stage.get('Snm', 'Hockey')
-                    for event in stage.get('Events', []):
-                        total += 1
-                        eid = event.get('Eid')
-                        t1, t2 = event['T1'][0]['Nm'], event['T2'][0]['Nm']
-                        
-                        # Парсим минуты и счет
-                        try:
-                            m = int(event.get('Emm') or event.get('Esh', 0))
-                            s1, s2 = int(event.get('Tr1', 0)), int(event.get('Tr2', 0))
-                            period = event.get('Eps')
-                        except: continue
+                # Ищем матчи в HTML (упрощенный поиск по названиям команд)
+                total = html.count('status="live"') # Считаем живые матчи в разметке
+                
+                # Поиск конкретно Омска для теста
+                is_omsk_live = "Омские Крылья" in html
+                
+                logger.info(f"ИТОГ: Найдено матчей в статусе LIVE: {total}")
+                
+                if is_omsk_live:
+                    logger.info("🎯 ОМСК НАЙДЕН В СЕТИ!")
+                    if "omsk_found" not in sent_signals:
+                        await bot.send_message(CHANNEL_ID, "🏒 **СВЯЗЬ УСТАНОВЛЕНА!**\nВижу матч: Омские Крылья — Динамо СПб\nИсточник: Чемпионат.com")
+                        sent_signals.add("omsk_found")
 
-                        # Логируем только активные матчи для чистоты
-                        if period in ['1ST', '2ND', '3RD']:
-                            logger.info(f"LIVE: {t1}-{t2} | {m} мин | {s1}:{s2}")
-
-                        # Наша стратегия (Тотал во 2-м периоде)
-                        if period == '2ND' and 21 <= m <= 35:
-                            key = f"{eid}_2nd"
-                            if key not in sent_signals:
-                                msg = f"🏒 **LIVE СИГНАЛ!**\n🏆 {league}\n🏒 {t1} — {t2}\n📊 Счет: `{s1}:{s2}` ({m} мин)\n\n🚀 ИИ ожидает гол!"
-                                await bot.send_message(CHANNEL_ID, msg)
-                                sent_signals.add(key)
-                                logger.info(f"ОТПРАВЛЕНО: {t1}-{t2}")
-
-                logger.info(f"ИТОГ: Вижу {total} матчей.")
         except Exception as e:
-            logger.error(f"Ошибка шлюза: {e}")
+            logger.error(f"Ошибка парсинга Чемпионата: {e}")
 
 async def main():
-    await bot.send_message(CHANNEL_ID, "✅ Связь с интернетом подтверждена. Запускаю поиск матчей...")
+    await bot.send_message(CHANNEL_ID, "🇷🇺 Бот переведен на российские серверы (Championat). Ищу Омск...")
     while True:
         await check_logic()
-        await asyncio.sleep(40)
+        await asyncio.sleep(45)
 
 if __name__ == "__main__":
     asyncio.run(main())
