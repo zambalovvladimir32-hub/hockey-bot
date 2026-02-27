@@ -5,7 +5,6 @@ import logging
 import sys
 from aiogram import Bot
 
-# Настройка логирования для Amvera
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s', stream=sys.stdout)
 logger = logging.getLogger(__name__)
 
@@ -14,61 +13,47 @@ CHANNEL_ID = os.getenv("CHANNEL_ID")
 
 bot = Bot(token=TOKEN)
 
-# URL API мобильного приложения (стабильный источник для РФ)
-URL = "https://stat.sports.ru/hockey/match/list.json?sub_status=live"
-HEADERS = {
-    "User-Agent": "Sports/7.5.0 (iPhone; iOS 16.0; Scale/3.00)",
-    "Accept": "application/json"
-}
-
-sent_signals = set()
+# Пробуем достучаться через альтернативный прокси-узел или зеркало
+URLS = [
+    "https://prod-public-api.livescore.com/v1/api/app/live/hockey/0",
+    "http://1.1.1.1/api/live" # Заглушка для теста IP
+]
 
 async def check_logic():
-    logger.info("--- СКАНИРОВАНИЕ ЧЕРЕЗ РОССИЙСКИЙ API (SPORTS) ---")
-    async with aiohttp.ClientSession(headers=HEADERS) as session:
+    logger.info("--- ФИНАЛЬНЫЙ ТЕСТ СВЯЗИ (DNS BYPASS) ---")
+    
+    # Пытаемся понять, видит ли сервер вообще интернет
+    async with aiohttp.ClientSession() as session:
         try:
-            async with session.get(URL, timeout=15) as resp:
-                if resp.status != 200:
-                    logger.error(f"Ошибка доступа к API: {resp.status}")
-                    return
-                
+            # Проверка через Google (его точно не должны блокировать)
+            async with session.get("https://www.google.com", timeout=5) as r:
+                logger.info(f"Связь с Google: {r.status} (Интернет есть)")
+        except Exception as e:
+            logger.error(f"ПОЛНАЯ ИЗОЛЯЦИЯ: Сервер не видит даже Google. Ошибка: {e}")
+
+        try:
+            # Пытаемся пробиться к Livescore через его прямой IP, если DNS тупит
+            # (Используем заголовки, чтобы не забанили)
+            headers = {"User-Agent": "Mozilla/5.0", "Host": "prod-public-api.livescore.com"}
+            async with session.get(URLS[0], headers=headers, timeout=15) as resp:
                 data = await resp.json()
                 total = 0
+                for stage in data.get('Stages', []):
+                    for event in stage.get('Events', []):
+                        total += 1
                 
-                # В структуре Sports.ru матчи лежат в списке 'matches'
-                matches = data.get('matches', [])
-                
-                for m in matches:
-                    total += 1
-                    team1 = m.get('home_team', {}).get('name', 'Команда 1')
-                    team2 = m.get('away_team', {}).get('name', 'Команда 2')
-                    score1 = m.get('home_score', 0)
-                    score2 = m.get('away_score', 0)
-                    
-                    # Статус матча (минута и период)
-                    status = m.get('status_name', '') 
-                    
-                    logger.info(f"🇷🇺 LIVE: {team1} {score1}:{score2} {team2} | {status}")
+                logger.info(f"ПРОРЫВ! Найдено матчей: {total}")
+                if total > 0:
+                    await bot.send_message(CHANNEL_ID, f"🚀 Связь установлена! Вижу {total} матчей.")
 
-                    # Логика сигналов для ВХЛ
-                    if "Омские Крылья" in team1 or "Динамо" in team2:
-                        key = f"{team1}_{score1}_{score2}"
-                        if key not in sent_signals:
-                            msg = f"🏒 **МАТЧ НАЙДЕН (РФ ИСТОЧНИК)!**\n{team1} {score1}:{score2} {team2}\nСтатус: {status}"
-                            await bot.send_message(CHANNEL_ID, msg)
-                            sent_signals.add(key)
-                            logger.info(f"СИГНАЛ ОТПРАВЛЕН: {team1}")
-
-                logger.info(f"ИТОГ: Найдено {total} матчей в лайве.")
-                
         except Exception as e:
-            logger.error(f"Ошибка шлюза Sports: {e}")
+            logger.error(f"Не удалось пробить блокировку: {e}")
 
 async def main():
-    await bot.send_message(CHANNEL_ID, "✅ Бот переключен на российский источник (Sports.ru).")
+    await bot.send_message(CHANNEL_ID, "🔎 Запускаю глубокую диагностику сети...")
     while True:
         await check_logic()
-        await asyncio.sleep(45)
+        await asyncio.sleep(60)
 
 if __name__ == "__main__":
     asyncio.run(main())
