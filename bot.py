@@ -4,47 +4,59 @@ import logging
 import sys
 from aiogram import Bot
 import aiohttp
-from aiohttp_socks import ProxyConnector
 
 logging.basicConfig(level=logging.INFO, stream=sys.stdout)
 logger = logging.getLogger(__name__)
 
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHANNEL_ID = os.getenv("CHANNEL_ID")
-PROXY_URL = os.getenv("PROXY_URL", "").strip()
+PROXY_URL = os.getenv("PROXY_URL")
 
 bot = Bot(token=TOKEN)
+URL = "https://d.flashscore.ru/x/feed/f_4_0_2_ru-ru_1"
 
-async def check_ip(connector):
-    """Проверка, через какой IP мы реально выходим в сеть"""
+async def get_data():
+    headers = {
+        "x-fsign": "SW9D1eZo",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+    }
     try:
-        async with aiohttp.ClientSession(connector=connector) as session:
-            async with session.get("https://api.ipify.org", timeout=10) as resp:
-                ip = await resp.text()
-                logger.info(f"🌐 Текущий IP выхода: {ip}")
-                return ip
+        async with aiohttp.ClientSession() as session:
+            # Передаем прокси напрямую
+            async with session.get(URL, headers=headers, proxy=PROXY_URL, timeout=15) as resp:
+                if resp.status == 200:
+                    data = await resp.text()
+                    return data
+                logger.warning(f"Статус сайта: {resp.status}")
     except Exception as e:
-        logger.error(f"❌ Не удалось проверить IP: {e}")
-        return None
+        logger.error(f"Ошибка прокси: {e}")
+    return None
+
+def parse(data):
+    matches = []
+    # Быстрый поиск 2-го периода
+    if "TT÷2" in data or "NS÷2" in data:
+        for block in data.split('~AA÷')[1:]:
+            if "TT÷2" in block or "NS÷2" in block:
+                try:
+                    home = block.split('AE÷')[1].split('¬')[0]
+                    away = block.split('AF÷')[1].split('¬')[0]
+                    matches.append(f"🏒 **{home} vs {away}** (2-й период)")
+                except: continue
+    return matches
 
 async def main():
-    logger.info("🚀 ЗАПУСК ПРОВЕРКИ...")
-    
-    # Пытаемся подключиться
-    connector = ProxyConnector.from_url(PROXY_URL) if PROXY_URL else None
-    
-    # Сначала проверяем, работает ли прокси вообще
-    current_ip = await check_ip(connector)
-    
-    if current_ip and "74.122.59.102" in current_ip:
-        logger.info("✅ ПРОКСИ РАБОТАЕТ! Начинаю парсинг...")
-    else:
-        logger.error("🚨 ПРОКСИ НЕ ПРИМЕНИЛСЯ или ОШИБКА АВТОРИЗАЦИИ.")
-        if not PROXY_URL:
-            logger.error("Переменная PROXY_URL пуста!")
-
-    # Твой основной цикл здесь...
-    # (Добавь сюда логику get_data и parse из предыдущего шага)
+    logger.info(f"🚀 ТЕСТОВЫЙ ЗАПУСК. Прокси: {PROXY_URL}")
+    while True:
+        data = await get_data()
+        if data:
+            logger.info("✅ ДАННЫЕ ПОЛУЧЕНЫ!")
+            found = parse(data)
+            if found:
+                await bot.send_message(CHANNEL_ID, "\n\n".join(found))
+        else:
+            logger.info("⏳ Прокси не ответил, жду...")
+        await asyncio.sleep(60)
 
 if __name__ == "__main__":
     asyncio.run(main())
