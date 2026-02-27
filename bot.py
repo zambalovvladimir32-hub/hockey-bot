@@ -15,78 +15,65 @@ logger = logging.getLogger(__name__)
 
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHANNEL_ID = os.getenv("CHANNEL_ID")
+PROXY_URL = os.getenv("PROXY_URL") 
 bot = Bot(token=TOKEN)
 
-# Меняем URL на альтернативный (f_4_0_3 вместо f_4_0_2)
-URL = "https://d.flashscore.ru/x/feed/f_4_0_3_ru-ru_1"
-FSIGN = "SW9D1eZo" 
+URL = "https://d.flashscore.ru/x/feed/f_4_0_2_ru-ru_1"
+FSIGN = "SW9D1eZo"
 
-async def get_flashscore_data():
+async def get_data():
     headers = {
         "x-fsign": FSIGN,
-        "x-flashscore-icp": "1",
-        "X-Requested-With": "XMLHttpRequest",
+        "Origin": "https://www.flashscore.ru",
         "Referer": "https://www.flashscore.ru/",
-        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36"
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
     }
+    
+    # Автоматически определяем тип прокси (http или socks5)
+    proxy_dict = {"http": PROXY_URL, "https": PROXY_URL} if PROXY_URL else None
     
     async with AsyncSession(impersonate="chrome120") as session:
         try:
-            # Добавляем случайную задержку перед запросом, чтобы не выглядеть как робот
-            await asyncio.sleep(random.uniform(1, 5))
-            resp = await session.get(URL, headers=headers, timeout=20)
+            await asyncio.sleep(random.uniform(2, 5))
+            # Запрос через прокси
+            resp = await session.get(URL, headers=headers, proxies=proxy_dict, timeout=30)
             
-            if resp.status_code == 200 and len(resp.text) > 100:
+            if resp.status_code == 200 and len(resp.text) > 500:
                 return resp.text
             
-            logger.warning(f"⚠️ Получен подозрительный ответ: {len(resp.text) if resp.text else 0} байт")
+            logger.warning(f"⚠️ Статус: {resp.status_code}, Размер: {len(resp.text) if resp.text else 0}")
             return None
         except Exception as e:
-            logger.error(f"🔥 Ошибка сети: {e}")
+            logger.error(f"🔥 Ошибка прокси: {e}")
             return None
 
-def parse_games(raw_data):
-    if not raw_data: return []
+def parse(raw):
     matches = []
-    blocks = raw_data.split('~AA÷')
-    
+    blocks = raw.split('~AA÷')
     for block in blocks[1:]:
-        try:
-            # Ищем команды
-            home = block.split('AE÷')[1].split('¬')[0] if 'AE÷' in block else "???"
-            away = block.split('AF÷')[1].split('¬')[0] if 'AF÷' in block else "???"
-            
-            # Статус периода (ищем цифру 2 в ключевых позициях)
-            # В хоккее часто идет TT÷2 (текущий период) или NS÷2
-            is_2nd = any(x in block for x in ['TT÷2', 'NS÷2', 'EP÷2', 'ST÷2', 'П2'])
-
-            if is_2nd:
+        if 'AE÷' not in block: continue
+        # Ищем 2-й период (П2 или коды)
+        if any(x in block for x in ['TT÷2', 'NS÷2', 'П2', '2ND']):
+            try:
+                home = block.split('AE÷')[1].split('¬')[0]
+                away = block.split('AF÷')[1].split('¬')[0]
                 s1 = block.split('AG÷')[1].split('¬')[0] if 'AG÷' in block else "0"
                 s2 = block.split('AH÷')[1].split('¬')[0] if 'AH÷' in block else "0"
-                matches.append(f"🏒 **{home} {s1}:{s2} {away}**\n⏱ Статус: 2-й период")
-                logger.info(f"🎯 Поймал: {home} - {away}")
-        except:
-            continue
+                matches.append(f"🏒 **{home} {s1}:{s2} {away}**\n⏱ 2-й период")
+            except: continue
     return matches
 
 async def main():
-    logger.info("🚀 БОТ ПЕРЕЗАПУЩЕН С НОВЫМ ФИДОМ")
+    logger.info(f"🚀 СТАРТ. Прокси: {'АКТИВЕН' if PROXY_URL else 'НЕТ'}")
     while True:
-        raw = await get_flashscore_data()
-        if raw:
-            logger.info(f"📦 Данные получены! Размер: {len(raw)} байт. Парсим...")
-            games = parse_games(raw)
-            if games:
-                report = "🥅 **LIVE: ОБНАРУЖЕН 2-Й ПЕРИОД**\n\n" + "\n\n".join(games[:10])
-                await bot.send_message(CHANNEL_ID, report, parse_mode="Markdown")
-                logger.info("📡 Сигнал в Telegram!")
-            else:
-                logger.info("⏸ 2-х периодов в этом пакете данных нет.")
-        else:
-            logger.error("📭 Не удалось получить данные (пустой ответ).")
-        
-        # Увеличим паузу, чтобы нас меньше банили
-        await asyncio.sleep(90)
+        data = await get_data()
+        if data:
+            logger.info(f"✅ Успех! Получено {len(data)} байт")
+            found = parse(data)
+            if found:
+                await bot.send_message(CHANNEL_ID, "\n\n".join(found[:10]), parse_mode="Markdown")
+                logger.info(f"📡 Сигналы отправлены: {len(found)}")
+        await asyncio.sleep(120)
 
 if __name__ == "__main__":
     asyncio.run(main())
