@@ -10,9 +10,10 @@ logger = logging.getLogger(__name__)
 
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHANNEL_ID = os.getenv("CHANNEL_ID")
+PROXY = os.getenv("PROXY_URL")
 
 bot = Bot(token=TOKEN)
-# Ссылка на фид (проверенная)
+# Прямая ссылка на фид хоккея
 URL = "https://d.flashscore.ru/x/feed/f_4_0_2_ru-ru_1"
 
 async def get_data():
@@ -23,30 +24,35 @@ async def get_data():
         "Referer": "https://www.flashscore.ru/",
     }
     
+    # Настройка прокси для curl_cffi
+    proxies = {"http": PROXY, "https": PROXY} if PROXY else None
+
     try:
-        # impersonate="chrome110" делает запрос идентичным реальному браузеру
         async with AsyncSession(impersonate="chrome110") as s:
-            r = await s.get(URL, headers=headers, timeout=20)
+            logger.info(f"🛰 Запрос через прокси: {PROXY[:20]}..." if PROXY else "🛰 Запрос напрямую")
+            r = await s.get(URL, headers=headers, proxies=proxies, timeout=30)
+            
             if r.status_code == 200:
-                # Если данных больше 500 символов - это успех
-                if len(r.text) > 500:
+                if len(r.text) > 1000: # Реальные данные обычно весят много
                     return r.text
-                else:
-                    logger.warning(f"⚠️ Мало данных: {len(r.text)} байт. Похоже на заглушку.")
+                logger.warning(f"⚠️ Мало данных: {len(r.text)} байт. Прокси заблокирован?")
+            elif r.status_code == 401:
+                logger.error("🔥 Ошибка 401: Прокси отклонил логин/пароль!")
             else:
                 logger.error(f"❌ Ошибка сайта: {r.status_code}")
     except Exception as e:
-        logger.error(f"🔥 Критическая ошибка: {e}")
+        logger.error(f"💥 Ошибка подключения: {e}")
     return None
 
 def parse(data):
     matches = []
-    # Маркеры начала матча в API Flashscore
+    # Flashscore делит матчи через ~AA÷
     blocks = data.split('~AA÷')
     for block in blocks[1:]:
-        # Ищем 2-й период (TT=2)
+        # Ищем 2-й период (TT÷2 или NS÷2)
         if 'TT÷2' in block or 'NS÷2' in block:
             try:
+                # AE - команда 1, AF - команда 2
                 home = block.split('AE÷')[1].split('¬')[0]
                 away = block.split('AF÷')[1].split('¬')[0]
                 matches.append(f"🏒 **{home} — {away}**\n⏱ Идет 2-й период")
@@ -55,22 +61,21 @@ def parse(data):
     return matches
 
 async def main():
-    logger.info("🚀 БОТ ЗАПУЩЕН С ИМИТАЦИЕЙ БРАУЗЕРА")
+    logger.info("🚀 СИСТЕМА ЗАПУЩЕНА")
     while True:
         raw_data = await get_data()
         if raw_data:
-            logger.info(f"✅ ДАННЫЕ ПОЛУЧЕНЫ ({len(raw_data)} байт)")
+            logger.info(f"✅ УСПЕХ! Данные получены ({len(raw_data)} байт)")
             found = parse(raw_data)
             if found:
-                report = "🥅 **LIVE: 2-Й ПЕРИОД**\n\n" + "\n\n".join(found[:10])
+                report = "🏒 **LIVE: ХОККЕЙ (2-Й ПЕРИОД)**\n\n" + "\n\n".join(found[:10])
                 await bot.send_message(CHANNEL_ID, report, parse_mode="Markdown")
-                logger.info(f"📡 Сигналы отправлены!")
+                logger.info(f"📡 Отправлено: {len(found)} матчей")
             else:
-                logger.info("🔎 Матчей во 2-м периоде пока нет.")
+                logger.info("🔎 Матчи во 2-м периоде не найдены.")
         else:
-            logger.info("⏳ Ждем следующего окна...")
+            logger.info("⏳ Повтор через 2 минуты...")
         
-        # Проверяем каждые 2 минуты
         await asyncio.sleep(120)
 
 if __name__ == "__main__":
