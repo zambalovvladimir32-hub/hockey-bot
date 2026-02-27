@@ -3,48 +3,48 @@ import os
 import logging
 import sys
 from aiogram import Bot
-import aiohttp
+from curl_cffi.requests import AsyncSession
 
-# Настройка логов для Railway
 logging.basicConfig(level=logging.INFO, stream=sys.stdout, format='%(asctime)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHANNEL_ID = os.getenv("CHANNEL_ID")
-# Важно: чистим строку от лишних символов
-PROXY = os.getenv("PROXY_URL", "").strip()
 
 bot = Bot(token=TOKEN)
+# Ссылка на фид (проверенная)
 URL = "https://d.flashscore.ru/x/feed/f_4_0_2_ru-ru_1"
 
 async def get_data():
     headers = {
         "x-fsign": "SW9D1eZo",
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Origin": "https://www.flashscore.ru",
+        "Referer": "https://www.flashscore.ru/",
     }
     
-    # Если прокси пустой или кривой, попробуем без него
-    current_proxy = PROXY if PROXY.startswith("http") else None
-    
     try:
-        async with aiohttp.ClientSession() as session:
-            logger.info(f"🛰 Запрос. Прокси: {current_proxy if current_proxy else 'НЕТ'}")
-            async with session.get(URL, headers=headers, proxy=current_proxy, timeout=20) as resp:
-                if resp.status == 200:
-                    text = await resp.text()
-                    if len(text) > 200:
-                        return text
-                logger.warning(f"⚠️ Ответ сайта: {resp.status}")
+        # impersonate="chrome110" делает запрос идентичным реальному браузеру
+        async with AsyncSession(impersonate="chrome110") as s:
+            r = await s.get(URL, headers=headers, timeout=20)
+            if r.status_code == 200:
+                # Если данных больше 500 символов - это успех
+                if len(r.text) > 500:
+                    return r.text
+                else:
+                    logger.warning(f"⚠️ Мало данных: {len(r.text)} байт. Похоже на заглушку.")
+            else:
+                logger.error(f"❌ Ошибка сайта: {r.status_code}")
     except Exception as e:
-        logger.error(f"❌ Ошибка сети: {e}")
+        logger.error(f"🔥 Критическая ошибка: {e}")
     return None
 
 def parse(data):
     matches = []
-    # Делим по маркерам матчей Flashscore
+    # Маркеры начала матча в API Flashscore
     blocks = data.split('~AA÷')
     for block in blocks[1:]:
-        # Проверяем, идет ли 2-й период (коды TT÷2 или NS÷2)
+        # Ищем 2-й период (TT=2)
         if 'TT÷2' in block or 'NS÷2' in block:
             try:
                 home = block.split('AE÷')[1].split('¬')[0]
@@ -55,22 +55,22 @@ def parse(data):
     return matches
 
 async def main():
-    logger.info("🔥 БОТ СТАРТОВАЛ С ЧИСТОГО ЛИСТА")
+    logger.info("🚀 БОТ ЗАПУЩЕН С ИМИТАЦИЕЙ БРАУЗЕРА")
     while True:
         raw_data = await get_data()
         if raw_data:
-            logger.info(f"✅ УСПЕХ! Получено данных: {len(raw_data)} байт")
+            logger.info(f"✅ ДАННЫЕ ПОЛУЧЕНЫ ({len(raw_data)} байт)")
             found = parse(raw_data)
             if found:
-                # Отправляем максимум 5 матчей, чтобы не спамить
-                report = "🥅 **LIVE: 2-Й ПЕРИОД**\n\n" + "\n\n".join(found[:5])
+                report = "🥅 **LIVE: 2-Й ПЕРИОД**\n\n" + "\n\n".join(found[:10])
                 await bot.send_message(CHANNEL_ID, report, parse_mode="Markdown")
-                logger.info(f"📡 Отправлено в канал: {len(found)} матчей")
+                logger.info(f"📡 Сигналы отправлены!")
             else:
-                logger.info("🔎 Матчей во 2-м периоде сейчас нет.")
+                logger.info("🔎 Матчей во 2-м периоде пока нет.")
         else:
-            logger.info("⏳ Данные не получены. Жду 2 минуты...")
+            logger.info("⏳ Ждем следующего окна...")
         
+        # Проверяем каждые 2 минуты
         await asyncio.sleep(120)
 
 if __name__ == "__main__":
