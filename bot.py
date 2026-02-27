@@ -2,6 +2,7 @@ import asyncio
 import os
 import logging
 import sys
+import random
 from aiogram import Bot
 from curl_cffi.requests import AsyncSession
 
@@ -16,76 +17,76 @@ TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHANNEL_ID = os.getenv("CHANNEL_ID")
 bot = Bot(token=TOKEN)
 
-URL = "https://d.flashscore.ru/x/feed/f_4_0_2_ru-ru_1"
+# Меняем URL на альтернативный (f_4_0_3 вместо f_4_0_2)
+URL = "https://d.flashscore.ru/x/feed/f_4_0_3_ru-ru_1"
 FSIGN = "SW9D1eZo" 
 
 async def get_flashscore_data():
     headers = {
         "x-fsign": FSIGN,
+        "x-flashscore-icp": "1",
         "X-Requested-With": "XMLHttpRequest",
         "Referer": "https://www.flashscore.ru/",
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36"
     }
+    
     async with AsyncSession(impersonate="chrome120") as session:
         try:
-            resp = await session.get(URL, headers=headers, timeout=15)
-            return resp.text if resp.status_code == 200 else None
-        except:
+            # Добавляем случайную задержку перед запросом, чтобы не выглядеть как робот
+            await asyncio.sleep(random.uniform(1, 5))
+            resp = await session.get(URL, headers=headers, timeout=20)
+            
+            if resp.status_code == 200 and len(resp.text) > 100:
+                return resp.text
+            
+            logger.warning(f"⚠️ Получен подозрительный ответ: {len(resp.text) if resp.text else 0} байт")
+            return None
+        except Exception as e:
+            logger.error(f"🔥 Ошибка сети: {e}")
             return None
 
 def parse_games(raw_data):
     if not raw_data: return []
     matches = []
-    # Делим на блоки матчей
     blocks = raw_data.split('~AA÷')
     
     for block in blocks[1:]:
         try:
-            # Ищем названия команд (теги AE и AF)
-            home_match = "".join(block.split('AE÷')[1].split('¬')[0]) if 'AE÷' in block else "???"
-            away_match = "".join(block.split('AF÷')[1].split('¬')[0]) if 'AF÷' in block else "???"
+            # Ищем команды
+            home = block.split('AE÷')[1].split('¬')[0] if 'AE÷' in block else "???"
+            away = block.split('AF÷')[1].split('¬')[0] if 'AF÷' in block else "???"
             
-            # Ищем счет
-            s1 = block.split('AG÷')[1].split('¬')[0] if 'AG÷' in block else "0"
-            s2 = block.split('AH÷')[1].split('¬')[0] if 'AH÷' in block else "0"
-            
-            # КЛЮЧЕВАЯ ПРОВЕРКА: Ищем маркер периода
-            # Мы ищем либо код TT÷2, либо явное упоминание П2/2-й в статусе
-            is_2nd = False
-            if 'TT÷2' in block or 'NS÷2' in block or 'EP÷2' in block:
-                is_2nd = True
-            elif 'ER÷2' in block or 'ST÷2' in block:
-                is_2nd = True
-            
-            # Доп. проверка на кириллицу "П2", как на твоем скрине
-            if not is_2nd and 'П2' in block:
-                is_2nd = True
+            # Статус периода (ищем цифру 2 в ключевых позициях)
+            # В хоккее часто идет TT÷2 (текущий период) или NS÷2
+            is_2nd = any(x in block for x in ['TT÷2', 'NS÷2', 'EP÷2', 'ST÷2', 'П2'])
 
-            # Проверка на Норильск
-            is_norilsk = "норильск" in home_match.lower() or "norilsk" in home_match.lower()
-
-            if is_2nd or is_norilsk:
-                matches.append(f"🏒 **{home_match} {s1}:{s2} {away_match}**\n⏱ Статус: Идет 2-й период")
-                logger.info(f"✅ Поймал матч: {home_match}")
+            if is_2nd:
+                s1 = block.split('AG÷')[1].split('¬')[0] if 'AG÷' in block else "0"
+                s2 = block.split('AH÷')[1].split('¬')[0] if 'AH÷' in block else "0"
+                matches.append(f"🏒 **{home} {s1}:{s2} {away}**\n⏱ Статус: 2-й период")
+                logger.info(f"🎯 Поймал: {home} - {away}")
         except:
             continue
     return matches
 
 async def main():
-    logger.info("🚀 БОТ ЗАПУЩЕН В РЕЖИМЕ 'ПРЯМОЙ ПОИСК'")
+    logger.info("🚀 БОТ ПЕРЕЗАПУЩЕН С НОВЫМ ФИДОМ")
     while True:
         raw = await get_flashscore_data()
         if raw:
-            logger.info(f"📥 Получено {len(raw)} байт данных. Ищу 2-й период...")
+            logger.info(f"📦 Данные получены! Размер: {len(raw)} байт. Парсим...")
             games = parse_games(raw)
             if games:
-                report = "🥅 **LIVE: 2-Й ПЕРИОД ОБНАРУЖЕН**\n\n" + "\n\n".join(games[:10])
+                report = "🥅 **LIVE: ОБНАРУЖЕН 2-Й ПЕРИОД**\n\n" + "\n\n".join(games[:10])
                 await bot.send_message(CHANNEL_ID, report, parse_mode="Markdown")
-                logger.info("📡 Сигнал в ТГ отправлен!")
+                logger.info("📡 Сигнал в Telegram!")
             else:
-                logger.info("⏳ Во входящих данных 2-го периода пока нет.")
+                logger.info("⏸ 2-х периодов в этом пакете данных нет.")
+        else:
+            logger.error("📭 Не удалось получить данные (пустой ответ).")
         
-        await asyncio.sleep(60)
+        # Увеличим паузу, чтобы нас меньше банили
+        await asyncio.sleep(90)
 
 if __name__ == "__main__":
     asyncio.run(main())
