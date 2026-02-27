@@ -16,9 +16,9 @@ GEMINI_KEY = os.getenv("GEMINI_API_KEY")
 bot = Bot(token=TOKEN)
 client = genai.Client(api_key=GEMINI_KEY)
 
-# НОВЫЙ ГЛОБАЛЬНЫЙ URL (Видит ВХЛ и КХЛ)
-URL = "https://prod-public-api.livescore.com/v1/api/app/live/hockey/0"
-HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+# НОВАЯ ССЫЛКА (Мобильный API - видит всё)
+URL = "https://prod-public-api.livescore.com/v1/api/app/live/hockey/0.00?MD=1"
+HEADERS = {"User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 14_0 like Mac OS X)"}
 
 sent_signals = set()
 
@@ -26,14 +26,14 @@ async def get_ai_prediction(match_data, algo):
     try:
         response = client.models.generate_content(
             model="gemini-1.5-flash",
-            contents=f"Ты эксперт по хоккею. Матч: {match_data}. Стратегия: {algo}. Дай прогноз на остаток периода до 6 слов."
+            contents=f"Ты эксперт по хоккею. Матч: {match_data}. Стратегия: {algo}. Дай короткий прогноз до 6 слов."
         )
         return f"🤖 AI: {response.text.strip()}"
     except:
-        return "🤖 AI: Ожидается результативная игра."
+        return "🤖 AI: Ожидается активность в атаке."
 
 async def check_logic():
-    logger.info("--- ГЛОБАЛЬНОЕ СКАНИРОВАНИЕ ---")
+    logger.info("--- ПРОВЕРКА ВСЕХ ЛИГ (ВХЛ/КХЛ/NHL) ---")
     async with aiohttp.ClientSession(headers=HEADERS) as session:
         try:
             async with session.get(URL, timeout=15) as resp:
@@ -46,14 +46,16 @@ async def check_logic():
                         eid = event.get('Eid')
                         t1, t2 = event['T1'][0]['Nm'], event['T2'][0]['Nm']
                         period = event.get('Eps')
+                        
                         try:
+                            # Парсим минуты и счет
                             m = int(event.get('Emm', 0))
                             s1, s2 = int(event.get('Tr1', 0)), int(event.get('Tr2', 0))
                         except: continue
 
-                        # Пишем в логи ВСЁ, что видим в 1-м и 2-м периодах
+                        # Выводим в логи ВСЁ, что видим в 1-м и 2-м периодах
                         if period in ['1ST', '2ND']:
-                            logger.info(f"ВИЖУ: {t1}-{t2} | {m} мин | {s1}:{s2} ({league})")
+                            logger.info(f"LIVE: {t1}-{t2} | {m} мин | {s1}:{s2} ({league})")
 
                         algo = None
                         if period == '1ST' and 11 <= m <= 19 and (s1 + s2 <= 1):
@@ -70,15 +72,15 @@ async def check_logic():
                                 await bot.send_message(CHANNEL_ID, msg, parse_mode="Markdown")
                                 sent_signals.add(key)
                 
-                logger.info(f"ВСЕГО МАТЧЕЙ В ОБРАБОТКЕ: {total}")
+                logger.info(f"ОБРАБОТАНО МАТЧЕЙ: {total}")
         except Exception as e:
-            logger.error(f"Ошибка: {e}")
+            logger.error(f"Ошибка парсинга: {e}")
 
 async def main():
-    await bot.send_message(CHANNEL_ID, "✅ Бот прозрел! Начинаю поиск ВХЛ и других лиг.")
+    await bot.send_message(CHANNEL_ID, "✅ Бот перенастроен на мобильный поток. Ищу матчи...")
     while True:
         await check_logic()
-        await asyncio.sleep(45)
+        await asyncio.sleep(40)
 
 if __name__ == "__main__":
     asyncio.run(main())
