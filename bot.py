@@ -1,33 +1,117 @@
-import asyncio
+Вот что мне дал perlexity
+
 import os
+
+import asyncio
+
 import aiohttp
+
+import logging
+
 from aiogram import Bot
 
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+
+
+
 TOKEN = os.getenv("TELEGRAM_TOKEN")
+
 CHANNEL_ID = os.getenv("CHANNEL_ID")
+
 bot = Bot(token=TOKEN)
 
-# Прямой фид, который обычно не режут
-URL = "https://v3.icehockey.api-sports.io/games?live=all"
-HEADERS = {"x-apisports-key": "4955734208e684078864f16b677a8b4b"} # Общий тестовый ключ
 
-async def check():
-    async with aiohttp.ClientSession(headers=HEADERS) as session:
-        try:
-            async with session.get(URL, timeout=10) as resp:
-                data = await resp.json()
-                for g in data.get('response', []):
-                    t1, t2 = g['teams']['home']['name'], g['teams']['away']['name']
-                    status = g['status']['short']
-                    if status == "2P" or "Norilsk" in t1:
-                        await bot.send_message(CHANNEL_ID, f"🏒 {t1} - {t2}\n⏱ Статус: {status}")
-        except:
-            pass
+
+async def parse_all_hockey_leagues():
+
+    """ВСЕ хоккейные лиги live с Flashscore"""
+
+    headers = {"x-fsign": "SW9D1eZo"}
+
+    feeds = [
+
+        "f_1_0_5_ru",  # Все лиги RU
+
+        "f_1_0_5_en",  # Все лиги EN (НХЛ лучше видно)
+
+    ]
+
+    
+
+    all_games = []
+
+    for feed in feeds:
+
+        url = f"https://d.flashscore.ru/x/feed/{feed}"
+
+        async with aiohttp.ClientSession() as session:
+
+            async with session.get(url, headers=headers) as resp:
+
+                text = await resp.text()
+
+        
+
+        data = text.split('¬')
+
+        for line in data:
+
+            parts = line.split('|')
+
+            if len(parts) > 10 and parts[2] == '1':  # LIVE
+
+                league = parts[9] if len(parts) > 9 else "Хоккей"
+
+                team1, team2 = parts[4], parts[5]
+
+                score = f"{parts[7]}-{parts[8]}"
+
+                minute = parts[1]
+
+                
+
+                all_games.append(f"🧊 {league}
+
+{team1} {score} {team2} ({minute}')")
+
+    
+
+    return all_games[:15]  # Топ-15 со всех лиг
+
+
+
+async def send_all_hockey():
+
+    games = await parse_all_hockey_leagues()
+
+    if games:
+
+        msg = "🌍 LIVE ХОККЕЙ | ВСЕ ЛИГИ МИРА:
+
+
+
+" + "
+
+
+
+".join(games)
+
+        await bot.send_message(CHANNEL_ID, msg)
+
+
 
 async def main():
-    while True:
-        await check()
-        await asyncio.sleep(60)
 
-if __name__ == "__main__":
-    asyncio.run(main())
+    scheduler = AsyncIOScheduler()
+
+    scheduler.add_job(send_all_hockey, "interval", seconds=30)
+
+    scheduler.start()
+
+    print("🚀 Бот: ВСЕ хоккейные лиги каждые 30с")
+
+    await asyncio.Event().wait()
+
+
+
+asyncio.run(main())
