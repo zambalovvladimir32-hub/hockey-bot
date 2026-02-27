@@ -2,68 +2,64 @@ import asyncio
 import os
 import logging
 from aiogram import Bot
-import aiohttp
-from aiohttp_socks import ProxyConnector
+from curl_cffi.requests import AsyncSession
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHANNEL_ID = os.getenv("CHANNEL_ID")
-# Чистим строку прокси от мусора
-PROXY_URL = os.getenv("PROXY_URL", "").strip()
+# Получаем данные без лишних пробелов
+PROXY_RAW = os.getenv("PROXY_URL", "").strip()
 
 bot = Bot(token=TOKEN)
 URL = "https://d.flashscore.ru/x/feed/f_4_0_2_ru-ru_1"
 
-async def fetch():
-    # Настраиваем коннектор через прокси
-    connector = ProxyConnector.from_url(PROXY_URL) if PROXY_URL else None
-    
+async def get_data():
     headers = {
         "x-fsign": "SW9D1eZo",
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-        "Origin": "https://www.flashscore.ru",
-        "Referer": "https://www.flashscore.ru/"
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
     }
+    
+    # Собираем строку прокси правильно
+    proxy_url = f"socks5://{PROXY_RAW}" if PROXY_RAW else None
+    proxies = {"http": proxy_url, "https": proxy_url} if proxy_url else None
 
-    try:
-        async with aiohttp.ClientSession(connector=connector) as session:
-            async with session.get(URL, headers=headers, timeout=20) as resp:
-                if resp.status == 200:
-                    text = await resp.text()
-                    if len(text) > 500:
-                        return text
-                logger.warning(f"⚠️ Статус: {resp.status}, Размер: {resp.content_length}")
-                return None
-    except Exception as e:
-        logger.error(f"🔥 Ошибка: {e}")
-        return None
+    async with AsyncSession(impersonate="chrome110") as s:
+        try:
+            # Делаем паузу перед запросом
+            await asyncio.sleep(5)
+            r = await s.get(URL, headers=headers, proxies=proxies, timeout=30)
+            if r.status_code == 200 and len(r.text) > 500:
+                return r.text
+            logger.warning(f"⚠️ Статус: {r.status_code}, Данных: {len(r.text) if r.text else 0}")
+        except Exception as e:
+            logger.error(f"🔥 Ошибка авторизации: {e}")
+    return None
 
-def parse(raw):
+def parse(data):
     matches = []
-    for block in raw.split('~AA÷')[1:]:
-        if 'AE÷' not in block: continue
-        # Проверка на 2-й период (TT=2 или П2)
-        if any(x in block for x in ['TT÷2', 'NS÷2', 'П2', '2-Й ПЕРИОД']):
+    for match in data.split('~AA÷')[1:]:
+        # Ищем 2-й период через коды Flashscore
+        if 'TT÷2' in match or 'NS÷2' in match:
             try:
-                home = block.split('AE÷')[1].split('¬')[0]
-                away = block.split('AF÷')[1].split('¬')[0]
-                s1 = block.split('AG÷')[1].split('¬')[0] if 'AG÷' in block else "0"
-                s2 = block.split('AH÷')[1].split('¬')[0] if 'AH÷' in block else "0"
-                matches.append(f"🏒 **{home} {s1}:{s2} {away}**")
+                home = match.split('AE÷')[1].split('¬')[0]
+                away = match.split('AF÷')[1].split('¬')[0]
+                matches.append(f"🏒 **{home} vs {away}**\n⏱ Идет 2-й период")
             except: continue
     return matches
 
 async def main():
-    logger.info(f"🚀 СТАРТ. Прокси: {PROXY_URL[:15]}...")
+    logger.info("🚀 БОТ ЗАПУЩЕН. Проверяю прокси...")
     while True:
-        data = await fetch()
-        if data:
-            logger.info(f"✅ УСПЕХ! Данные получены.")
-            results = parse(data)
-            if results:
-                await bot.send_message(CHANNEL_ID, "🥅 **LIVE: 2-Й ПЕРИОД**\n\n" + "\n\n".join(results[:10]), parse_mode="Markdown")
+        raw_data = await get_data()
+        if raw_data:
+            logger.info("✅ ДАННЫЕ ПОЛУЧЕНЫ!")
+            found = parse(raw_data)
+            if found:
+                await bot.send_message(CHANNEL_ID, "\n\n".join(found[:5]), parse_mode="Markdown")
+        else:
+            logger.info("⏳ Ожидание доступа...")
         await asyncio.sleep(120)
 
 if __name__ == "__main__":
