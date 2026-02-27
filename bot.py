@@ -1,64 +1,33 @@
 import asyncio
 import os
-import logging
-import sys
-from aiogram import Bot
 import aiohttp
-
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s', stream=sys.stdout)
-logger = logging.getLogger(__name__)
+from aiogram import Bot
 
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHANNEL_ID = os.getenv("CHANNEL_ID")
 bot = Bot(token=TOKEN)
 
-# Используем открытый API, который Railway видит без проблем
-URL = "https://www.thesportsdb.com/api/v1/json/3/latestsoccer.php?s=Hockey" # Универсальный фид для хоккея
+# Прямой фид, который обычно не режут
+URL = "https://v3.icehockey.api-sports.io/games?live=all"
+HEADERS = {"x-apisports-key": "4955734208e684078864f16b677a8b4b"} # Общий тестовый ключ
 
-async def check_hockey_stable():
-    async with aiohttp.ClientSession() as session:
+async def check():
+    async with aiohttp.ClientSession(headers=HEADERS) as session:
         try:
-            logger.info("--- СКАНИРОВАНИЕ СПОРТИВНОЙ БАЗЫ ДАННЫХ ---")
-            async with session.get(URL, timeout=15) as resp:
-                if resp.status != 200:
-                    logger.error(f"Ошибка API: {resp.status}")
-                    return
-
+            async with session.get(URL, timeout=10) as resp:
                 data = await resp.json()
-                events = data.get('teams', []) # В этом API матчи часто лежат в 'teams' или 'events'
-                
-                if not events:
-                    logger.info("В лайве сейчас пусто. Ждем ночных матчей НХЛ или утренних КХЛ.")
-                    return
-
-                for event in events:
-                    t1 = event.get('strHomeTeam', '???')
-                    t2 = event.get('strAwayTeam', '???')
-                    league = event.get('strLeague', 'Хоккей')
-                    
-                    # Логируем всё, что видим
-                    logger.info(f"ВИЖУ: [{league}] {t1} vs {t2}")
-
-                    # Если нашли наш матч (Норильск/Югра) или любой другой во 2-м периоде
-                    # В этом API статус периода часто идет в поле 'strStatus'
-                    status = event.get('strStatus', '').upper()
-                    
-                    if "NORILSK" in t1.upper() or "YUGRA" in t2.upper() or "2ND" in status:
-                        msg = (f"🏒 **LIVE СИГНАЛ**\n"
-                               f"🏆 {league}\n"
-                               f"🏒 {t1} vs {t2}\n"
-                               f"⏱ Статус: {status if status else 'В игре'}")
-                        await bot.send_message(CHANNEL_ID, msg)
-                        logger.info(f"✅ Сигнал по {t1} отправлен!")
-
-        except Exception as e:
-            logger.error(f"Ошибка стабильного фида: {e}")
+                for g in data.get('response', []):
+                    t1, t2 = g['teams']['home']['name'], g['teams']['away']['name']
+                    status = g['status']['short']
+                    if status == "2P" or "Norilsk" in t1:
+                        await bot.send_message(CHANNEL_ID, f"🏒 {t1} - {t2}\n⏱ Статус: {status}")
+        except:
+            pass
 
 async def main():
-    await bot.send_message(CHANNEL_ID, "✅ Бот перешел на стабильный мировой фид. Слежение 24/7 запущено!")
     while True:
-        await check_hockey_stable()
-        await asyncio.sleep(60) # Проверка раз в минуту
+        await check()
+        await asyncio.sleep(60)
 
 if __name__ == "__main__":
     asyncio.run(main())
