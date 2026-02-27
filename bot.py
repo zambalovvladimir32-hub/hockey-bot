@@ -12,51 +12,50 @@ TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHANNEL_ID = os.getenv("CHANNEL_ID")
 bot = Bot(token=TOKEN)
 
-# Прямой фид всех активных игр (включая ВХЛ)
-URL = "https://d.flashscore.com/x/feed/f_4_0_2_ru-ru_1"
+# Ультимативный API эндпоинт (JSON формат)
+URL = "https://m.flashscore.ru/x/api/v1/live-matches/hockey"
 
 HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-    "X-Referer": "https://www.flashscore.ru/",
+    "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 15_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.0 Mobile/15E148 Safari/604.1",
     "X-Requested-With": "XMLHttpRequest",
-    "Accept": "*/*"
+    "Accept": "application/json"
 }
 
-async def check_vhl():
+async def ultimate_check():
     async with aiohttp.ClientSession(headers=HEADERS) as session:
         try:
-            logger.info("--- ГЛУБОКОЕ СКАНИРОВАНИЕ ЛИНИИ ---")
-            async with session.get(URL, timeout=20) as resp:
-                raw_data = await resp.text()
-                
-                # Проверяем наличие матча по частям названий
-                targets = ["Norilsk", "Yugra", "Норильск", "Югра"]
-                found = any(target in raw_data for target in targets)
-                
-                if found:
-                    logger.info("🎯 НОРИЛЬСК ОБНАРУЖЕН В СЫРЫХ ДАННЫХ!")
-                    # Вырезаем кусок текста вокруг названия для отладки в логи
-                    start_idx = raw_data.find("Norilsk") if "Norilsk" in raw_data else raw_data.find("Норильск")
-                    logger.info(f"Данные матча: {raw_data[start_idx:start_idx+100]}")
+            logger.info("--- УЛЬТИМАТИВНЫЙ ПОИСК (JSON API) ---")
+            async with session.get(URL, timeout=15) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    matches = data.get('data', [])
+                    found_vhl = False
                     
-                    await bot.send_message(CHANNEL_ID, "✅ **Матч найден!**\n🏔 ХК Норильск — Югра обнаружен в системе Flashscore.\n📡 Начинаю слежение за периодами.")
+                    for match in matches:
+                        t1 = match.get('home_name', '')
+                        t2 = match.get('away_name', '')
+                        score = f"{match.get('home_score', '0')}:{match.get('away_score', '0')}"
+                        status = match.get('status_type', '') # Период
+                        
+                        logger.info(f"ВИЖУ: {t1} {score} {t2} (Статус: {status})")
+                        
+                        if "Norilsk" in t1 or "Yugra" in t2 or "Норильск" in t1:
+                            found_vhl = True
+                            msg = f"🎯 **МАТЧ НАЙДЕН!**\n🏔 {t1} {score} {t2}\n⏱ Статус: {status}\n⚡️ Связь установлена!"
+                            await bot.send_message(CHANNEL_ID, msg)
+                    
+                    if not found_vhl:
+                        logger.warning("Норильск отсутствует в JSON-фиде. В линии только зарубежные лиги?")
                 else:
-                    logger.warning("Матч пока не прогрузился в общий фид. Пробую расширенный поиск...")
-                    # Попробуем альтернативный ID фида, если первый пуст
-                    alt_url = "https://d.flashscore.com/x/feed/f_4_1_2_ru-ru_1"
-                    async with session.get(alt_url, timeout=15) as alt_resp:
-                        alt_text = await alt_resp.text()
-                        if any(t in alt_text for t in targets):
-                            logger.info("🎯 НОРИЛЬСК НАЙДЕН ЧЕРЕЗ АЛЬТЕРНАТИВНЫЙ ФИД!")
-                            await bot.send_message(CHANNEL_ID, "✅ Матч ВХЛ найден через резервный канал!")
-
+                    logger.error(f"Ошибка API: {resp.status}")
+                    
         except Exception as e:
-            logger.error(f"Ошибка при поиске ВХЛ: {e}")
+            logger.error(f"Ошибка парсинга: {e}")
 
 async def main():
-    await bot.send_message(CHANNEL_ID, "🕵️‍♂️ Запущен поиск матча Норильск — Югра...")
+    await bot.send_message(CHANNEL_ID, "🚀 Запуск ультимативного поиска ВХЛ...")
     while True:
-        await check_vhl()
+        await ultimate_check()
         await asyncio.sleep(60)
 
 if __name__ == "__main__":
