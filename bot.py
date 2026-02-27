@@ -13,8 +13,7 @@ CHANNEL_ID = os.getenv("CHANNEL_ID")
 PROXY = os.getenv("PROXY_URL")
 
 bot = Bot(token=TOKEN)
-
-# ИСПОЛЬЗУЕМ ПРЯМОЙ LIVE-ФИД (обычно вкладка LIVE имеет индекс 3)
+# Ссылка на все LIVE матчи хоккея
 URL = "https://www.flashscore.ru/x/feed/f_4_1_3_ru-ru_1"
 
 async def get_data():
@@ -22,18 +21,15 @@ async def get_data():
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         "x-fsign": "SW9D1eZo",
         "x-requested-with": "XMLHttpRequest",
-        "Referer": "https://www.flashscore.ru/hockey/",
+        "Referer": "https://www.flashscore.ru/",
     }
-    
     try:
         async with AsyncSession(impersonate="chrome110") as s:
             proxies = {"http": PROXY, "https": PROXY} if PROXY else None
-            # Добавляем метку времени, чтобы сайт не присылал старые данные из кэша
-            ts_url = f"{URL}?t={int(asyncio.get_event_loop().time())}"
-            r = await s.get(ts_url, headers=headers, proxies=proxies, timeout=20)
-            
-            if r.status_code == 200 and len(r.text) > 1000:
-                logger.info(f"📡 Данные получены: {len(r.text)} байт")
+            # Добавляем случайное число, чтобы данные всегда были свежими
+            r = await s.get(f"{URL}?v={asyncio.get_event_loop().time()}", headers=headers, proxies=proxies, timeout=20)
+            if r.status_code == 200 and len(r.text) > 500:
+                logger.info(f"📡 Получено {len(r.text)} байт")
                 return r.text
     except Exception as e:
         logger.error(f"❌ Ошибка сети: {e}")
@@ -44,33 +40,35 @@ def parse(data):
     blocks = data.split('~AA÷')
     
     for block in blocks[1:]:
-        # КЛЮЧЕВОЙ ПОИСК: Ищем признаки 2-го периода
-        # JS÷2 - стандартный код, P2 - отображение в браузере
-        is_2nd = any(x in block for x in ['JS÷2', 'TT÷2', 'LP÷2', 'NS÷2'])
-        
-        # Если нашли 2-й период
-        if is_2nd:
+        # AB÷3 — это железный признак того, что матч ИДЕТ ПРЯМО СЕЙЧАС (Live)
+        # Также проверяем AB÷2 (перерыв)
+        if 'AB÷3' in block or 'AB÷2' in block:
             try:
+                # Названия команд
                 home = block.split('AE÷')[1].split('¬')[0]
                 away = block.split('AF÷')[1].split('¬')[0]
                 
-                # Счет
+                # Текущий счет
                 s_h = block.split('AG÷')[1].split('¬')[0] if 'AG÷' in block else '0'
                 s_a = block.split('AH÷')[1].split('¬')[0] if 'AH÷' in block else '0'
                 
-                # Минута периода (если есть)
-                minute = ""
-                if 'BE÷' in block:
-                    minute = f" ({block.split('BE÷')[1].split('¬')[0]}')"
+                # Попробуем понять, какой период/минута (для красоты)
+                period = "LIVE"
+                if 'JS÷' in block:
+                    p_val = block.split('JS÷')[1].split('¬')[0]
+                    if p_val == '1': period = "1-й период"
+                    elif p_val == '2': period = "2-й период"
+                    elif p_val == '3': period = "3-й период"
+                    elif p_val == '6': period = "Перерыв"
 
-                matches.append(f"🏒 **{home} {s_h}:{s_a} {away}**\n⏱ Идет 2-й период{minute}")
+                matches.append(f"🏒 **{home} {s_h}:{s_a} {away}**\n⏱ Статус: {period}")
             except:
                 continue
     return matches
 
 async def main():
-    logger.info("🚀 БОТ В РЕЖИМЕ ЖИВОЙ ОХОТЫ")
-    reported = set() # Чтобы не спамить об одной и той же игре
+    logger.info("🚀 БОТ ВКЛЮЧЕН: МОНИТОРИНГ ВСЕГО LIVE")
+    reported = set()
 
     while True:
         raw_data = await get_data()
@@ -79,21 +77,24 @@ async def main():
             
             new_to_send = []
             for m in found:
-                # Берем только названия команд как уникальный ключ
-                match_key = m.split('\n')[0]
-                if match_key not in reported:
+                # Создаем уникальный ключ для матча, чтобы не спамить одним и тем же
+                # Если счет изменится, бот пришлет обновление (так даже лучше)
+                if m not in reported:
                     new_to_send.append(m)
-                    reported.add(match_key)
+                    reported.add(m)
             
             if new_to_send:
-                text = "🥅 **LIVE: 2-Й ПЕРИОД ОБНАРУЖЕН**\n\n" + "\n\n".join(new_to_send)
-                await bot.send_message(CHANNEL_ID, text, parse_mode="Markdown")
-                logger.info(f"📣 Отправлено: {len(new_to_send)} матчей")
+                # Отправляем по 5 матчей в одном сообщении, чтобы не забанил Телеграм
+                for i in range(0, len(new_to_send), 5):
+                    chunk = new_to_send[i:i+5]
+                    text = "🥅 **ТЕКУЩИЕ LIVE МАТЧИ:**\n\n" + "\n\n".join(chunk)
+                    await bot.send_message(CHANNEL_ID, text, parse_mode="Markdown")
+                logger.info(f"📣 Отправлено новых событий: {len(new_to_send)}")
             else:
-                logger.info("🔎 Новых матчей во 2-м периоде пока нет...")
+                logger.info("🔎 Живых матчей пока нет или всё уже отправлено.")
 
-        # Очистка памяти раз в пару часов
-        if len(reported) > 100: reported.clear()
+        # Очищаем память каждые 3 часа
+        if len(reported) > 300: reported.clear()
         
         await asyncio.sleep(60)
 
