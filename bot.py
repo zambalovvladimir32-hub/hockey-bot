@@ -1,5 +1,3 @@
-Вот что мне дал perlexity
-
 import os
 
 import asyncio
