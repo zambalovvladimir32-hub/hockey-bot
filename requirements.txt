@@ -1,3 +1,2 @@
 aiogram
 curl_cffi
-python-dotenv
