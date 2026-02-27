@@ -32,9 +32,7 @@ async def get_flashscore_data():
             resp = await session.get(URL, headers=headers, timeout=15)
             if resp.status_code == 200:
                 return resp.text
-            else:
-                logger.error(f"🚫 Ошибка доступа: {resp.status_code}")
-                return None
+            return None
         except Exception as e:
             logger.error(f"🔥 Ошибка сети: {e}")
             return None
@@ -44,43 +42,46 @@ def parse_games(raw_data):
     matches = []
     blocks = raw_data.split('~AA÷')
     
+    # DEBUG: Выведем в лог кусочек данных первого матча, чтобы понять формат
+    if len(blocks) > 1:
+        logger.info(f"🔎 DEBUG (кусок данных): {blocks[1][:150]}")
+
     for block in blocks[1:]:
         try:
+            # Превращаем блок в словарь для удобства
             res = dict(re.findall(r'(\w+)÷([^¬]+)', block))
             home = res.get('AE', '???')
             away = res.get('AF', '???')
             s1, s2 = res.get('AG', '0'), res.get('AH', '0')
             
-            # ВНИМАНИЕ: Flashscore в сырых данных использует TT для номера периода
-            # Если TT=2 — это 100% второй период
-            period_code = res.get('TT', '') 
-            status_text = (res.get('ER', '') + res.get('ST', '')).upper()
+            # Собираем ВЕСЬ текст блока в одну кучу для поиска периода
+            full_block_text = block.upper()
             
-            # ПРОВЕРКА: Либо код периода = 2, либо в тексте есть маркеры
-            is_2nd = (period_code == "2") or any(x in status_text for x in ["2", "P2", "П2", "2ND", "ВТОР"])
-            is_target = "норильск" in home.lower() or "norilsk" in home.lower()
+            # Ищем любые намеки на 2-й период (TT=2, П2, P2, 2-Й)
+            is_2nd = any(x in full_block_text for x in ["TT÷2", "П2", "P2", "2-Й", "2ND", "ER÷2"])
+            is_target = "НОРИЛЬСК" in full_block_text or "NORILSK" in full_block_text
 
             if is_2nd or is_target:
-                msg = f"🏒 **{home} {s1}:{s2} {away}**\n⏱ Статус: 2-й период (код {period_code})"
+                status = res.get('ER', res.get('ST', '2-й период'))
+                msg = f"🏒 **{home} {s1}:{s2} {away}**\n⏱ Статус: {status}"
                 matches.append(msg)
-                logger.info(f"✅ НАЙДЕН МАТЧ: {home} - {away} (TT={period_code}, ST={status_text})")
+                logger.info(f"✅ НАШЕЛ: {home} - {away} (Статус: {status})")
         except:
             continue
     return matches
 
 async def main():
-    logger.info("🚀 СИСТЕМА ОБНАРУЖЕНИЯ АКТИВИРОВАНА")
+    logger.info("🚀 СКАНИРОВАНИЕ ЗАПУЩЕНО")
     while True:
         raw = await get_flashscore_data()
         if raw:
-            logger.info("📥 Данные получены, анализирую...")
             games = parse_games(raw)
             if games:
                 report = "🥅 **LIVE: ХОККЕЙ, 2-й ПЕРИОД**\n\n" + "\n\n".join(games[:10])
                 await bot.send_message(CHANNEL_ID, report, parse_mode="Markdown")
-                logger.info("📡 Сигнал отправлен в Telegram!")
+                logger.info("📡 Отправил сигнал в ТГ!")
             else:
-                logger.info("⏸ Матчи идут, но 2-й период в кодах (TT=2) пока не найден.")
+                logger.info("⏳ Матчи есть, но 2-й период не распознан. Ждем...")
         
         await asyncio.sleep(60)
 
