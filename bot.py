@@ -1,7 +1,6 @@
 import asyncio
 import os
 import logging
-import re
 import sys
 from aiogram import Bot
 from curl_cffi.requests import AsyncSession
@@ -30,78 +29,61 @@ async def get_flashscore_data():
     async with AsyncSession(impersonate="chrome120") as session:
         try:
             resp = await session.get(URL, headers=headers, timeout=15)
-            if resp.status_code == 200:
-                return resp.text
-            logger.error(f"🚫 Ошибка сервера: {resp.status_code}")
-            return None
-        except Exception as e:
-            logger.error(f"🔥 Ошибка сети: {e}")
+            return resp.text if resp.status_code == 200 else None
+        except:
             return None
 
 def parse_games(raw_data):
     if not raw_data: return []
     matches = []
+    # Делим на блоки матчей
     blocks = raw_data.split('~AA÷')
     
-    seen_statuses = set()
-
     for block in blocks[1:]:
         try:
-            # Превращаем блок в словарь тегов
-            res = dict(re.findall(r'(\w+)÷([^¬]+)', block))
+            # Ищем названия команд (теги AE и AF)
+            home_match = "".join(block.split('AE÷')[1].split('¬')[0]) if 'AE÷' in block else "???"
+            away_match = "".join(block.split('AF÷')[1].split('¬')[0]) if 'AF÷' in block else "???"
             
-            home = res.get('AE', '???')
-            away = res.get('AF', '???')
+            # Ищем счет
+            s1 = block.split('AG÷')[1].split('¬')[0] if 'AG÷' in block else "0"
+            s2 = block.split('AH÷')[1].split('¬')[0] if 'AH÷' in block else "0"
             
-            # Собираем все поля, которые могут отвечать за период
-            # Обычно это NS, TT, EP или ER
-            st1 = res.get('NS', '')
-            st2 = res.get('TT', '')
-            st3 = res.get('EP', '')
-            st4 = res.get('ER', '')
+            # КЛЮЧЕВАЯ ПРОВЕРКА: Ищем маркер периода
+            # Мы ищем либо код TT÷2, либо явное упоминание П2/2-й в статусе
+            is_2nd = False
+            if 'TT÷2' in block or 'NS÷2' in block or 'EP÷2' in block:
+                is_2nd = True
+            elif 'ER÷2' in block or 'ST÷2' in block:
+                is_2nd = True
             
-            current_status = f"NS:{st1}|TT:{st2}|EP:{st3}|ER:{st4}"
-            seen_statuses.add(current_status)
+            # Доп. проверка на кириллицу "П2", как на твоем скрине
+            if not is_2nd and 'П2' in block:
+                is_2nd = True
 
-            # ПРОВЕРКА: Если хотя бы в одном из статусных полей есть "2"
-            # Но исключаем, если это просто счет (проверяем именно статус)
-            is_2nd = any(res.get(key) == "2" for key in ['NS', 'TT', 'EP', 'ER', 'ST'])
-            
-            # Доп. проверка на текст "П2" или "2-Й" во всем блоке
-            if not is_2nd:
-                if "П2" in block or "P2" in block.upper() or "2ND" in block.upper():
-                    is_2nd = True
+            # Проверка на Норильск
+            is_norilsk = "норильск" in home_match.lower() or "norilsk" in home_match.lower()
 
-            if is_2nd:
-                s1, s2 = res.get('AG', '0'), res.get('AH', '0')
-                msg = f"🏒 **{home} {s1}:{s2} {away}**\n⏱ Период обнаружен! (Код: {current_status})"
-                matches.append(msg)
-                logger.info(f"✅ НАЙДЕНО: {home} - {away} с кодами {current_status}")
-                
-        except Exception as e:
+            if is_2nd or is_norilsk:
+                matches.append(f"🏒 **{home_match} {s1}:{s2} {away_match}**\n⏱ Статус: Идет 2-й период")
+                logger.info(f"✅ Поймал матч: {home_match}")
+        except:
             continue
-    
-    # Выводим в лог все уникальные комбинации статусов, что увидел бот
-    if seen_statuses:
-        logger.info(f"🔎 Все найденные статусы в лайве: {list(seen_statuses)[:5]}")
-            
     return matches
 
 async def main():
-    logger.info("📡 ЗАПУСК ГЛУБОКОГО СКАНИРОВАНИЯ...")
+    logger.info("🚀 БОТ ЗАПУЩЕН В РЕЖИМЕ 'ПРЯМОЙ ПОИСК'")
     while True:
         raw = await get_flashscore_data()
         if raw:
+            logger.info(f"📥 Получено {len(raw)} байт данных. Ищу 2-й период...")
             games = parse_games(raw)
             if games:
-                report = "🥅 **LIVE: НАЙДЕН 2-Й ПЕРИОД!**\n\n" + "\n\n".join(games[:10])
-                try:
-                    await bot.send_message(CHANNEL_ID, report, parse_mode="Markdown")
-                    logger.info("📨 Сообщение отправлено в Telegram!")
-                except Exception as e:
-                    logger.error(f"❌ Ошибка ТГ: {e}")
+                report = "🥅 **LIVE: 2-Й ПЕРИОД ОБНАРУЖЕН**\n\n" + "\n\n".join(games[:10])
+                await bot.send_message(CHANNEL_ID, report, parse_mode="Markdown")
+                logger.info("📡 Сигнал в ТГ отправлен!")
             else:
-                logger.info("⏳ 2-й период пока не опознан в кодах. Жду следующего тика...")
+                logger.info("⏳ Во входящих данных 2-го периода пока нет.")
         
         await asyncio.sleep(60)
 
