@@ -6,75 +6,45 @@ from aiogram import Bot
 import aiohttp
 from aiohttp_socks import ProxyConnector
 
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s',
-    stream=sys.stdout
-)
+logging.basicConfig(level=logging.INFO, stream=sys.stdout)
 logger = logging.getLogger(__name__)
 
-# Берем всё из переменных Railway
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHANNEL_ID = os.getenv("CHANNEL_ID")
-PROXY_URL = os.getenv("PROXY_URL")
+PROXY_URL = os.getenv("PROXY_URL", "").strip()
 
 bot = Bot(token=TOKEN)
-URL = "https://d.flashscore.ru/x/feed/f_4_0_2_ru-ru_1"
 
-async def get_data():
-    # Настраиваем подключение через прокси (поддерживает и http, и socks5)
-    connector = ProxyConnector.from_url(PROXY_URL) if PROXY_URL else None
-    
-    headers = {
-        "x-fsign": "SW9D1eZo",
-        "Origin": "https://www.flashscore.ru",
-        "Referer": "https://www.flashscore.ru/",
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
-    }
-
+async def check_ip(connector):
+    """Проверка, через какой IP мы реально выходим в сеть"""
     try:
         async with aiohttp.ClientSession(connector=connector) as session:
-            async with session.get(URL, headers=headers, timeout=20) as resp:
-                if resp.status == 200:
-                    text = await resp.text()
-                    if len(text) > 500:
-                        return text
-                logger.warning(f"⚠️ Статус: {resp.status}, Размер: {resp.content_length}")
+            async with session.get("https://api.ipify.org", timeout=10) as resp:
+                ip = await resp.text()
+                logger.info(f"🌐 Текущий IP выхода: {ip}")
+                return ip
     except Exception as e:
-        logger.error(f"🔥 Ошибка сети/прокси: {e}")
-    return None
-
-def parse(data):
-    matches = []
-    blocks = data.split('~AA÷')
-    for block in blocks[1:]:
-        # Ищем маркеры 2-го периода в кодах Flashscore
-        if any(x in block for x in ['TT÷2', 'NS÷2']):
-            try:
-                home = block.split('AE÷')[1].split('¬')[0]
-                away = block.split('AF÷')[1].split('¬')[0]
-                matches.append(f"🏒 **{home} — {away}**\n⏱ Идет 2-й период")
-            except:
-                continue
-    return matches
+        logger.error(f"❌ Не удалось проверить IP: {e}")
+        return None
 
 async def main():
-    logger.info(f"🚀 СТАРТ. Прокси используется: {'ДА' if PROXY_URL else 'НЕТ'}")
+    logger.info("🚀 ЗАПУСК ПРОВЕРКИ...")
     
-    while True:
-        raw_data = await get_data()
-        if raw_data:
-            logger.info("✅ ДАННЫЕ УСПЕШНО ПОЛУЧЕНЫ")
-            found = parse(raw_data)
-            if found:
-                await bot.send_message(CHANNEL_ID, "\n\n".join(found[:10]), parse_mode="Markdown")
-                logger.info(f"📡 Отправлено матчей: {len(found)}")
-            else:
-                logger.info("🔎 Матчей во 2-м периоде пока нет.")
-        else:
-            logger.info("⏳ Попытка через 2 минуты...")
-        
-        await asyncio.sleep(120)
+    # Пытаемся подключиться
+    connector = ProxyConnector.from_url(PROXY_URL) if PROXY_URL else None
+    
+    # Сначала проверяем, работает ли прокси вообще
+    current_ip = await check_ip(connector)
+    
+    if current_ip and "74.122.59.102" in current_ip:
+        logger.info("✅ ПРОКСИ РАБОТАЕТ! Начинаю парсинг...")
+    else:
+        logger.error("🚨 ПРОКСИ НЕ ПРИМЕНИЛСЯ или ОШИБКА АВТОРИЗАЦИИ.")
+        if not PROXY_URL:
+            logger.error("Переменная PROXY_URL пуста!")
+
+    # Твой основной цикл здесь...
+    # (Добавь сюда логику get_data и parse из предыдущего шага)
 
 if __name__ == "__main__":
     asyncio.run(main())
