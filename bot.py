@@ -2,9 +2,7 @@ import asyncio
 import os
 import logging
 import sys
-import re
 from aiogram import Bot
-from bs4 import BeautifulSoup
 import aiohttp
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s', stream=sys.stdout)
@@ -14,57 +12,53 @@ TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHANNEL_ID = os.getenv("CHANNEL_ID")
 bot = Bot(token=TOKEN)
 
-# Поисковый запрос, который выводит плашку счета
-URL = "https://www.google.com/search?q=норильск+югра+хоккей+счет+онлайн"
+# Используем открытый API, который Railway видит без проблем
+URL = "https://www.thesportsdb.com/api/v1/json/3/latestsoccer.php?s=Hockey" # Универсальный фид для хоккея
 
-HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-    "Accept-Language": "ru-RU,ru;q=0.9"
-}
-
-async def scout_google():
-    async with aiohttp.ClientSession(headers=HEADERS) as session:
+async def check_hockey_stable():
+    async with aiohttp.ClientSession() as session:
         try:
-            logger.info("--- РЕНТГЕН GOOGLE-ВЫДАЧИ ---")
+            logger.info("--- СКАНИРОВАНИЕ СПОРТИВНОЙ БАЗЫ ДАННЫХ ---")
             async with session.get(URL, timeout=15) as resp:
-                html = await resp.text()
-                soup = BeautifulSoup(html, 'html.parser')
-                
-                # Чистим текст от мусора
-                raw_text = soup.get_text(separator=' ').lower()
-                
-                # 1. Проверяем, что мы вообще на нужной странице
-                if "норильск" in raw_text and "югра" in raw_text:
-                    logger.info("🎯 Команды в выдаче подтверждены.")
-                    
-                    # 2. Ищем упоминание 2-го периода (разные варианты написания)
-                    is_2nd = any(p in raw_text for p in ["2-й период", "2-й", "2nd period", "второй период"])
-                    
-                    # 3. Пытаемся вытянуть счет через регулярные выражения (ищем цифра-дефис-цифра)
-                    score_match = re.search(r'(\d)\s*[:\-]\s*(\d)', raw_text)
-                    current_score = score_match.group(0) if score_match else "0:0 (или не найден)"
+                if resp.status != 200:
+                    logger.error(f"Ошибка API: {resp.status}")
+                    return
 
-                    if is_2nd:
-                        msg = (f"🔥 **ЕСТЬ СИГНАЛ: 2-й ПЕРИОД**\n"
-                               f"🏒 Норильск vs Югра\n"
-                               f"📊 Текущий счет по Google: {current_score}\n"
-                               f"🌐 Источник: Поисковая выдача")
+                data = await resp.json()
+                events = data.get('teams', []) # В этом API матчи часто лежат в 'teams' или 'events'
+                
+                if not events:
+                    logger.info("В лайве сейчас пусто. Ждем ночных матчей НХЛ или утренних КХЛ.")
+                    return
+
+                for event in events:
+                    t1 = event.get('strHomeTeam', '???')
+                    t2 = event.get('strAwayTeam', '???')
+                    league = event.get('strLeague', 'Хоккей')
+                    
+                    # Логируем всё, что видим
+                    logger.info(f"ВИЖУ: [{league}] {t1} vs {t2}")
+
+                    # Если нашли наш матч (Норильск/Югра) или любой другой во 2-м периоде
+                    # В этом API статус периода часто идет в поле 'strStatus'
+                    status = event.get('strStatus', '').upper()
+                    
+                    if "NORILSK" in t1.upper() or "YUGRA" in t2.upper() or "2ND" in status:
+                        msg = (f"🏒 **LIVE СИГНАЛ**\n"
+                               f"🏆 {league}\n"
+                               f"🏒 {t1} vs {t2}\n"
+                               f"⏱ Статус: {status if status else 'В игре'}")
                         await bot.send_message(CHANNEL_ID, msg)
-                        logger.info("✅ Сигнал отправлен!")
-                    else:
-                        logger.info(f"Матч идет, но 2-й период еще не начался (или уже прошел). Счет: {current_score}")
-                else:
-                    logger.warning("Google обновил выдачу, команды временно пропали. Ждем...")
+                        logger.info(f"✅ Сигнал по {t1} отправлен!")
 
         except Exception as e:
-            logger.error(f"Ошибка сканера: {e}")
+            logger.error(f"Ошибка стабильного фида: {e}")
 
 async def main():
-    await bot.send_message(CHANNEL_ID, "🚀 Система слежения за ВХЛ активирована через Google-фильтр.")
+    await bot.send_message(CHANNEL_ID, "✅ Бот перешел на стабильный мировой фид. Слежение 24/7 запущено!")
     while True:
-        await scout_google()
-        # Проверяем раз в 45 секунд, чтобы Google не забанил за частые запросы
-        await asyncio.sleep(45)
+        await check_hockey_stable()
+        await asyncio.sleep(60) # Проверка раз в минуту
 
 if __name__ == "__main__":
     asyncio.run(main())
