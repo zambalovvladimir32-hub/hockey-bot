@@ -13,49 +13,49 @@ CHANNEL_ID = os.getenv("CHANNEL_ID")
 
 bot = Bot(token=TOKEN)
 
-# Используем "всеохватывающий" эндпоинт
 URL = "https://prod-public-api.livescore.com/v1/api/app/live/hockey/0"
 
 async def check_matches():
-    # Имитируем запрос от официального приложения
     headers = {
         "User-Agent": "LiveScore/5.3.1 (iPhone; iOS 15.4.1)",
         "X-Requested-With": "com.livescore.app"
     }
-    
     async with aiohttp.ClientSession(headers=headers) as session:
         try:
             async with session.get(URL, timeout=15) as resp:
                 data = await resp.json()
-                found_vhl = False
+                found_any = 0
                 
                 for stage in data.get('Stages', []):
-                    # Проверяем, есть ли Россия в названии лиги
-                    league_name = stage.get('Snm', '')
+                    league = stage.get('Snm', 'Хоккей')
                     for event in stage.get('Events', []):
-                        t1 = event['T1'][0]['Nm']
-                        t2 = event['T2'][0]['Nm']
-                        status = event.get('Eps', '') # Период
-                        score1 = event.get('Tr1', '0')
-                        score2 = event.get('Tr2', '0')
+                        found_any += 1
+                        t1, t2 = event['T1'][0]['Nm'], event['T2'][0]['Nm']
+                        status = event.get('Eps', 'LIVE')
+                        s1, s2 = event.get('Tr1', '0'), event.get('Tr2', '0')
                         
-                        # Печатаем вообще всё, что видим в лайве для теста
-                        logger.info(f"ВИЖУ В ЛАЙВЕ: {t1} {score1}:{score2} {t2} ({status})")
+                        # В ТЕСТОВОМ РЕЖИМЕ шлем вообще всё, что находим
+                        logger.info(f"Нашел: {t1} {s1}:{s2} {t2}")
+                        
+                        # Уникальный ключ для матча, чтобы не спамить
+                        key = f"{t1}_{s1}_{s2}_test"
+                        if not hasattr(check_matches, "sent"): check_matches.sent = set()
+                        
+                        if key not in check_matches.sent:
+                            msg = f"🏒 **ТЕСТОВАЯ ПРОВЕРКА СВЯЗИ**\n🏆 {league}\n📊 {t1} {s1}:{s2} {t2}\n⏱ Статус: {status}"
+                            await bot.send_message(CHANNEL_ID, msg)
+                            check_matches.sent.add(key)
 
-                        # Если это наш Омск или любая ВХЛ
-                        if "Omskie" in t1 or "Dinamo" in t2 or "VHL" in league_name:
-                            found_vhl = True
-                            logger.info(f"🎯 ЦЕЛЬ НАЙДЕНА: {t1} - {t2}")
-                            # Тут логика отправки сигнала...
-
-                if not found_vhl:
-                    logger.info("ВХЛ сейчас нет в активной фазе API. Ждем обновлений.")
+                if found_any == 0:
+                    logger.info("В мировом лайве сейчас вообще нет хоккея. Ждем матчи.")
+                else:
+                    logger.info(f"Успешно обработано матчей: {found_any}")
 
         except Exception as e:
-            logger.error(f"Ошибка парсинга: {e}")
+            logger.error(f"Ошибка: {e}")
 
 async def main():
-    await bot.send_message(CHANNEL_ID, "🚀 Бот на Railway перешел в режим глубокого сканирования!")
+    await bot.send_message(CHANNEL_ID, "🛠 Бот в тестовом режиме: шлю в канал все матчи из лайва!")
     while True:
         await check_matches()
         await asyncio.sleep(60)
