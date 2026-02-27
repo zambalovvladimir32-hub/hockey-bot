@@ -15,9 +15,8 @@ logger = logging.getLogger(__name__)
 
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHANNEL_ID = os.getenv("CHANNEL_ID")
-# Очищаем прокси от возможных пробелов при вставке в Railway
-raw_proxy = os.getenv("PROXY_URL", "")
-PROXY_URL = raw_proxy.strip() if raw_proxy else None
+# Берем прокси и убираем лишние пробелы
+PROXY_URL = os.getenv("PROXY_URL", "").strip()
 
 bot = Bot(token=TOKEN)
 
@@ -29,25 +28,26 @@ async def get_data():
         "x-fsign": FSIGN,
         "Origin": "https://www.flashscore.ru",
         "Referer": "https://www.flashscore.ru/",
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36"
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
     }
+    
+    # Прямая передача прокси в сессию
+    proxies = {"http": PROXY_URL, "https": PROXY_URL} if PROXY_URL else None
     
     async with AsyncSession(impersonate="chrome120") as session:
         try:
-            # Увеличим паузу, чтобы сервер прокси не считал нас спамом
-            await asyncio.sleep(random.uniform(4, 8))
+            # Большая пауза, чтобы прокси проснулся
+            await asyncio.sleep(random.uniform(5, 10))
             
-            proxies = {"http": PROXY_URL, "https": PROXY_URL} if PROXY_URL else None
-            
-            resp = await session.get(URL, headers=headers, proxies=proxies, timeout=30)
+            resp = await session.get(URL, headers=headers, proxies=proxies, timeout=40)
             
             if resp.status_code == 200 and len(resp.text) > 500:
                 return resp.text
             
-            logger.warning(f"⚠️ Сервер ответил, но данных нет. Код: {resp.status_code}, Размер: {len(resp.text) if resp.text else 0}")
+            logger.warning(f"⚠️ Статус: {resp.status_code}, Размер: {len(resp.text) if resp.text else 0}")
             return None
         except Exception as e:
-            logger.error(f"🔥 Критическая ошибка подключения: {e}")
+            logger.error(f"🔥 Ошибка: {e}")
             return None
 
 def parse(raw):
@@ -55,7 +55,7 @@ def parse(raw):
     blocks = raw.split('~AA÷')
     for block in blocks[1:]:
         if 'AE÷' not in block: continue
-        # Ищем 2-й период (тег TT=2 или текст П2)
+        # Ищем 2-й период (метки TT÷2 или П2)
         if any(x in block for x in ['TT÷2', 'NS÷2', 'П2']):
             try:
                 home = block.split('AE÷')[1].split('¬')[0]
@@ -67,20 +67,21 @@ def parse(raw):
     return matches
 
 async def main():
-    logger.info(f"🚀 СТАРТ. Прокси: {PROXY_URL[:20]}... (протокол HTTP/SOCKS)")
+    logger.info(f"🚀 СТАРТ С ПРОКСИ: {PROXY_URL[:15]}...")
     
     while True:
         data = await get_data()
         if data:
-            logger.info(f"✅ ПОБЕДА! Получено {len(data)} байт.")
+            logger.info(f"✅ ДАННЫЕ ПОЛУЧЕНЫ! ({len(data)} байт)")
             found = parse(data)
             if found:
-                await bot.send_message(CHANNEL_ID, "🥅 **ОБНАРУЖЕНЫ МАТЧИ (2-Й ПЕРИОД):**\n\n" + "\n\n".join(found[:10]), parse_mode="Markdown")
-                logger.info(f"📡 Сигналы ушли в Telegram: {len(found)}")
+                text = "🥅 **LIVE: 2-Й ПЕРИОД**\n\n" + "\n\n".join(found[:10])
+                await bot.send_message(CHANNEL_ID, text, parse_mode="Markdown")
+                logger.info(f"📡 Сигналы отправлены: {len(found)}")
             else:
-                logger.info("🔎 2-й период пока не обнаружен в кодах.")
+                logger.info("🔎 Матчей во 2-м периоде пока нет.")
         else:
-            logger.info("⏳ Данные не получены. Жду 2 минуты...")
+            logger.info("⏳ Не удалось зайти. Повтор через 2 минуты...")
         
         await asyncio.sleep(120)
 
