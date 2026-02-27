@@ -1,4 +1,3 @@
 aiogram
-aiohttp
-aiohttp_socks
 curl_cffi
+python-dotenv
