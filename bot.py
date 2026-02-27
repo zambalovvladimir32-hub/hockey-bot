@@ -3,7 +3,6 @@ import aiohttp
 import os
 import logging
 import sys
-import random
 from aiogram import Bot
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s', stream=sys.stdout)
@@ -14,57 +13,49 @@ CHANNEL_ID = os.getenv("CHANNEL_ID")
 
 bot = Bot(token=TOKEN)
 
-# Мобильный шлюз, который сложнее заблокировать
+# Используем "всеохватывающий" эндпоинт
 URL = "https://prod-public-api.livescore.com/v1/api/app/live/hockey/0"
 
 async def check_matches():
-    # Генерируем заголовки обычного iPhone, чтобы сервер не догадался, что это бот
+    # Имитируем запрос от официального приложения
     headers = {
-        "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 15_4_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.4 Mobile/15E148 Safari/604.1",
-        "X-Requested-With": "com.livescore.app",
-        "Accept": "*/*"
+        "User-Agent": "LiveScore/5.3.1 (iPhone; iOS 15.4.1)",
+        "X-Requested-With": "com.livescore.app"
     }
-    
-    logger.info("--- ПОПЫТКА ПРОРЫВА (MOBILE GATEWAY) ---")
     
     async with aiohttp.ClientSession(headers=headers) as session:
         try:
-            # Добавляем случайный параметр, чтобы обойти кэширование блокировки
-            async with session.get(f"{URL}?random={random.randint(1,1000)}", timeout=15) as resp:
-                if resp.status != 200:
-                    logger.error(f"Сервер сбросил соединение. Код: {resp.status}")
-                    return
-                
+            async with session.get(URL, timeout=15) as resp:
                 data = await resp.json()
-                matches_found = 0
+                found_vhl = False
                 
                 for stage in data.get('Stages', []):
-                    league = stage.get('Snm', 'Hockey')
+                    # Проверяем, есть ли Россия в названии лиги
+                    league_name = stage.get('Snm', '')
                     for event in stage.get('Events', []):
-                        matches_found += 1
                         t1 = event['T1'][0]['Nm']
                         t2 = event['T2'][0]['Nm']
+                        status = event.get('Eps', '') # Период
                         score1 = event.get('Tr1', '0')
                         score2 = event.get('Tr2', '0')
-                        status = event.get('Eps', '') # Период
-                        minute = event.get('Emm', '0') # Минута
                         
-                        logger.info(f"ВИЖУ: {t1} - {t2} | {score1}:{score2} | {status} {minute}'")
+                        # Печатаем вообще всё, что видим в лайве для теста
+                        logger.info(f"ВИЖУ В ЛАЙВЕ: {t1} {score1}:{score2} {t2} ({status})")
 
-                        # Логика сигнала для 2-го периода (21-35 мин)
-                        if status == '2ND' and 21 <= int(minute or 0) <= 35:
-                            # Тут будет твой ИИ и отправка сообщения
-                            pass
+                        # Если это наш Омск или любая ВХЛ
+                        if "Omskie" in t1 or "Dinamo" in t2 or "VHL" in league_name:
+                            found_vhl = True
+                            logger.info(f"🎯 ЦЕЛЬ НАЙДЕНА: {t1} - {t2}")
+                            # Тут логика отправки сигнала...
 
-                logger.info(f"УСПЕХ! В лайве обнаружено {matches_found} матчей.")
-                if matches_found == 0:
-                    logger.warning("Список пуст, но сервер ответил. Ждем начала игр.")
+                if not found_vhl:
+                    logger.info("ВХЛ сейчас нет в активной фазе API. Ждем обновлений.")
 
         except Exception as e:
-            logger.error(f"Критическая ошибка доступа: {e}")
+            logger.error(f"Ошибка парсинга: {e}")
 
 async def main():
-    await bot.send_message(CHANNEL_ID, "🛡 Запущен мобильный протокол обхода блокировок...")
+    await bot.send_message(CHANNEL_ID, "🚀 Бот на Railway перешел в режим глубокого сканирования!")
     while True:
         await check_matches()
         await asyncio.sleep(60)
