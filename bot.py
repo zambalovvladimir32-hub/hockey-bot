@@ -3,7 +3,7 @@ from aiogram import Bot
 from curl_cffi.requests import AsyncSession
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s', handlers=[logging.StreamHandler(sys.stdout)])
-logger = logging.getLogger("HockeyXRay")
+logger = logging.getLogger("HockeyPro")
 
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHANNEL_ID = os.getenv("CHANNEL_ID")
@@ -25,43 +25,28 @@ class HockeyScanner:
         except: return ""
 
     async def run(self):
-        logger.info("📡 ЗАПУСК ДИАГНОСТИКИ v11.4 [X-RAY]")
+        logger.info("=== HOCKEY SCANNER v12.0 (FINAL) STARTED ===")
         async with AsyncSession(impersonate="chrome110") as session:
             while True:
                 try:
                     r = await session.get(f"{self.url}?t={int(time.time())}", headers=self.headers, timeout=20)
                     if r.status_code != 200:
-                        logger.error(f"❌ Ошибка доступа: {r.status_code}")
                         await asyncio.sleep(20); continue
 
                     sections = r.text.split('~ZA÷')
-                    found_matches = 0
-                    
                     for sec in sections[1:]:
                         league = sec.split('¬')[0]
                         matches = sec.split('~AA÷')
                         for m_block in matches[1:]:
-                            found_matches += 1
                             m_id = m_block.split('¬')[0]
-                            status = self._get_val(m_block, 'AC÷') # Код статуса
-                            timer = self._get_val(m_block, 'TT÷').upper() # Текст (ПЕРЕРЫВ)
-                            home = self._get_val(m_block, 'AE÷')
-                            away = self._get_val(m_block, 'AF÷')
-
-                            # 🛠 ЛОГИРУЕМ ВСЕ ПЕРЕРЫВЫ ДЛЯ ПРОВЕРКИ
-                            # Если это не 1, 2 или 3 период - значит какой-то спец-статус
-                            if status not in ['1', '2', '3', '6', '37']: 
-                                logger.info(f"🔎 Найден матч: {home}-{away} | Статус Код: {status} | Таймер: {timer}")
-
-                            # Пытаемся поймать перерыв (Код 45 или текст "ПЕРЕРЫВ")
-                            is_break = (status == '45' or "ПЕРЕРЫВ" in timer or "1-Й ПЕРЕРЫВ" in timer)
+                            status = self._get_val(m_block, 'AC÷')
                             
-                            if is_break:
-                                # Пробуем достать счет 1-го периода
+                            # ЛОГИКА: Теперь ловим и 45, и 46 (как на твоем скрине)
+                            if status in ['45', '46']:
                                 h1 = self._get_val(m_block, 'BA÷')
                                 a1 = self._get_val(m_block, 'BB÷')
                                 
-                                # Если BA/BB пусты, берем общий счет AG/AH (в перерыве он совпадает с 1-м периодом)
+                                # Запасной вариант забора счета
                                 if h1 == "" or a1 == "":
                                     h1 = self._get_val(m_block, 'AG÷')
                                     a1 = self._get_val(m_block, 'AH÷')
@@ -70,22 +55,20 @@ class HockeyScanner:
                                     score = (int(h1), int(a1))
                                     if score in [(0, 0), (1, 0), (0, 1)]:
                                         if m_id not in self.sent_cache:
+                                            home = self._get_val(m_block, 'AE÷')
+                                            away = self._get_val(m_block, 'AF÷')
                                             link = f"https://www.flashscore.ru/match/{m_id}/#/match-summary"
-                                            text = f"🏒 **{home} {h1}:{a1} {away}**\n🏆 {league}\n\n☕️ **ПЕРЕРЫВ 1-2**\n📊 Счет: `{h1}:{a1}`\n🔗 [МАТЧ]({link})"
+                                            
+                                            text = f"🏒 **{home} {h1}:{a1} {away}**\n🏆 {league}\n\n☕️ **ПЕРЕРЫВ 1-2**\n📊 Счет: `{h1}:{a1}`\n🔗 [ОТКРЫТЬ МАТЧ]({link})"
+                                            
                                             await bot.send_message(CHANNEL_ID, text, parse_mode="Markdown", disable_web_page_preview=True)
                                             self.sent_cache.add(m_id)
-                                            logger.info(f"✅ ОТПРАВЛЕНО: {home}-{away}")
-                                    else:
-                                        if m_id not in self.sent_cache:
-                                            logger.info(f"⏭ Пропуск по счету: {home}-{away} ({h1}:{a1})")
-                                            self.sent_cache.add(m_id)
+                                            logger.info(f"✅ СИГНАЛ: {home}-{away}")
 
-                    logger.info(f"📡 Цикл окончен. Всего игр в лайве: {found_matches}")
                     if len(self.sent_cache) > 1000: self.sent_cache.clear()
-
                 except Exception as e:
-                    logger.error(f"🚨 Ошибка: {e}")
-                await asyncio.sleep(40)
+                    logger.error(f"Ошибка: {e}")
+                await asyncio.sleep(35)
 
 if __name__ == "__main__":
     asyncio.run(HockeyScanner().run())
