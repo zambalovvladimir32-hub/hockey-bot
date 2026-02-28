@@ -7,12 +7,13 @@ from aiogram import Bot
 from aiogram.exceptions import TelegramRetryAfter
 from curl_cffi.requests import AsyncSession
 
+# --- НАСТРОЙКА ЛОГИРОВАНИЯ ---
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s [%(levelname)s] %(message)s',
     handlers=[logging.StreamHandler(sys.stdout)]
 )
-logger = logging.getLogger("HockeyBot")
+logger = logging.getLogger("HockeyBreakScanner")
 
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHANNEL_ID = os.getenv("CHANNEL_ID")
@@ -20,6 +21,7 @@ bot = Bot(token=TOKEN)
 
 class HockeyScanner:
     def __init__(self):
+        # Опрашиваем все доступные лайв-матчи по хоккею
         self.url = "https://www.flashscore.ru/x/feed/f_4_0_3_ru-ru_1"
         self.headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/122.0.0.0 Safari/537.36",
@@ -27,7 +29,7 @@ class HockeyScanner:
             "x-requested-with": "XMLHttpRequest",
             "Referer": "https://www.flashscore.ru/"
         }
-        self.sent_cache = {}
+        self.sent_cache = set() # Теперь храним просто ID матчей, так как шлем только 1 раз в перерыв
 
     def _get_val(self, block, tag):
         try:
@@ -37,69 +39,55 @@ class HockeyScanner:
 
     def validate_match(self, block, league):
         m_id = block.split('¬')[0]
+        
+        # 1. ПРОВЕРКА СТАТУСА: СТРОГО ПЕРЕРЫВ
         ac_code = self._get_val(block, 'AC÷')
         timer = self._get_val(block, 'TT÷').upper()
         
-        # 1. ФИЛЬТР СТАТУСА: Только 2-й период (2) или Перерыв (45)
-        if ac_code not in ['2', '45']:
+        # Код 45 - перерыв между 1 и 2 периодом. 
+        # Если статус 2 (идет 2-й период) или любой другой - сразу пропускаем!
+        is_break = (ac_code == '45' or "ПЕРЕРЫВ" in timer or "PAUSE" in timer)
+        
+        # Исключаем перерыв перед 3-м периодом (код 46) или конец матча
+        if not is_break or ac_code in ['46', '3', '6', '2']:
             return None
 
-        # 2. ЖЕСТКИЙ БЛОК 3-ГО ПЕРИОДА
-        # Теги BE÷ и BF÷ появляются ТОЛЬКО когда начинается 3-й период
-        if self._get_val(block, 'BE÷') or self._get_val(block, 'BF÷'):
-            return None
-
-        # 3. ПАРСИНГ ГОЛОВ (Правильные хоккейные теги Flashscore)
-        ag = self._get_val(block, 'AG÷') # Общий счет (хозяева)
-        ah = self._get_val(block, 'AH÷') # Общий счет (гости)
-        if not ag or not ah: 
-            return None
-            
-        # 1-й период (BA - хозяева, BB - гости)
-        ba = self._get_val(block, 'BA÷')
-        bb = self._get_val(block, 'BB÷')
+        # 2. ПРОВЕРКА СЧЕТА 1-ГО ПЕРИОДА
+        ba = self._get_val(block, 'BA÷') # Голы хозяев в 1-м
+        bb = self._get_val(block, 'BB÷') # Голы гостей в 1-м
+        
         if not ba or not bb:
-            return None # Если нет реза 1-го периода - данные не готовы
-            
-        # 2-й период (BC - хозяева, BD - гости)
-        bc = self._get_val(block, 'BC÷')
-        bd = self._get_val(block, 'BD÷')
+            return None # 1-й период еще не завершен, данных нет
 
         try:
-            total_h, total_a = int(ag), int(ah)
-            h1, a1 = int(ba), int(bb)
-            h2 = int(bc) if bc else 0
-            a2 = int(bd) if bd else 0
-
-            # 4. МАТЕМАТИЧЕСКАЯ ПРОВЕРКА (Железная логика)
-            # Сумма по периодам ОБЯЗАНА сходиться с общим счетом
-            if (h1 + h2 != total_h) or (a1 + a2 != total_a):
-                return None
-                
+            h1 = int(ba)
+            a1 = int(bb)
         except ValueError:
             return None
 
-        # ОФОРМЛЕНИЕ
-        is_break = (ac_code == '45' or "ПЕРЕРЫВ" in timer or "PAUSE" in timer)
-        status_text = "☕️ ПЕРЕРЫВ (1-2)" if is_break else f"⏱ 2-Й ПЕРИОД [{timer}]"
+        # 3. ФИЛЬТР НУЖНЫХ СЧЕТОВ: 0:0, 1:0, 0:1
+        valid_scores = [(0, 0), (1, 0), (0, 1)]
+        if (h1, a1) not in valid_scores:
+            return None # Счет другой (например 1:1 или 2:0) - пропускаем
+
+        # ОФОРМЛЕНИЕ УВЕДОМЛЕНИЯ
         home = self._get_val(block, 'AE÷')
         away = self._get_val(block, 'AF÷')
 
         return {
             'id': m_id,
-            'state': ac_code, # Кэшируем по статусу (чтобы не спамить при каждом голе)
             'text': (
-                f"🏒 **{home} {total_h}:{total_a} {away}**\n"
+                f"🏒 **{home} {h1}:{a1} {away}**\n"
                 f"🏆 {league}\n"
-                f"{status_text}\n\n"
-                f"📊 Счет по периодам:\n"
-                f"└ 1-й: `{h1}:{a1}`\n"
-                f"└ 2-й: `{h2}:{a2}`"
+                f"☕️ ПЕРЕРЫВ (Перед 2-м периодом)\n\n"
+                f"📊 Счет 1-го периода: `{h1}:{a1}`"
             )
         }
 
     async def run(self):
-        logger.info("=== HOCKEY SCANNER v10.0 (REAL HOCKEY TAGS) STARTED ===")
+        logger.info("=== HOCKEY BREAK SCANNER v11.0 STARTED ===")
+        logger.info("Условия: Любая лига | Только Перерыв 1-2 | Счет 0:0, 1:0, 0:1")
+        
         async with AsyncSession(impersonate="chrome110") as session:
             while True:
                 try:
@@ -109,34 +97,38 @@ class HockeyScanner:
                         continue
 
                     sections = r.text.split('~ZA÷')
-                    matches_found = 0
                     
                     for sec in sections[1:]:
                         league = sec.split('¬')[0]
                         matches = sec.split('~AA÷')
+                        
                         for m_block in matches[1:]:
                             match = self.validate_match(m_block, league)
+                            
                             if match:
-                                matches_found += 1
-                                m_id, state = match['id'], match['state']
+                                m_id = match['id']
                                 
-                                # Отправляем, если в кэше нет этого матча ИЛИ у него сменился статус (например, с перерыва на 2-й период)
-                                if self.sent_cache.get(m_id) != state:
+                                # Отправляем только если еще не присылали этот матч
+                                if m_id not in self.sent_cache:
                                     try:
                                         await bot.send_message(CHANNEL_ID, match['text'], parse_mode="Markdown")
-                                        self.sent_cache[m_id] = state
-                                        logger.info(f"✅ Отправлено: {m_id} (Статус: {state})")
+                                        self.sent_cache.add(m_id)
+                                        logger.info(f"✅ Отправлено: {m_id} (Счет 1-го периода подходит)")
+                                        await asyncio.sleep(1) # Защита от спам-блока Telegram
                                     except TelegramRetryAfter as e:
                                         await asyncio.sleep(e.retry_after)
                                     except Exception as e:
-                                        logger.error(f"Ошибка TG: {e}")
+                                        logger.error(f"Ошибка отправки TG: {e}")
 
-                    logger.info(f"🔎 Найдено чистых матчей 2-го периода/перерыва: {matches_found}")
-                    if len(self.sent_cache) > 600: self.sent_cache.clear()
+                    # Очистка памяти каждые 12-24 часа (500 матчей хватит за глаза)
+                    if len(self.sent_cache) > 500: 
+                        self.sent_cache.clear()
+                        logger.info("🧹 Кэш отправленных матчей очищен")
 
                 except Exception as e:
-                    logger.error(f"Ошибка цикла: {e}")
+                    logger.error(f"Ошибка цикла парсинга: {e}")
                 
+                # Интервал опроса - 30 секунд
                 await asyncio.sleep(30)
 
 if __name__ == "__main__":
