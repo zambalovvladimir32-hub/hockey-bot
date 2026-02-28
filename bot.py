@@ -3,17 +3,24 @@ from aiogram import Bot
 from curl_cffi.requests import AsyncSession
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s', handlers=[logging.StreamHandler(sys.stdout)])
-logger = logging.getLogger("Hockey11Plus")
+logger = logging.getLogger("HockeyStatPro")
 
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHANNEL_ID = os.getenv("CHANNEL_ID")
 bot = Bot(token=TOKEN)
 
-# Расширенный список лиг
-ALLOWED_LEAGUES = [
-    "КХЛ", "ВХЛ", "МХЛ", "НХЛ", "NHL", "АХЛ", "AHL", "ECHL", "OHL", "WHL", "QMJHL",
-    "ФИНЛЯНДИЯ", "ШВЕЦИЯ", "ГЕРМАНИЯ", "ЧЕХИЯ", "ШВЕЙЦАРИЯ", "АВСТРИЯ", "НОРВЕГИЯ",
-    "ДАНИЯ", "СЛОВАКИЯ", "ПОЛЬША", "БЕЛАРУСЬ", "КАЗАХСТАН", "ФРАНЦИЯ", "ИТАЛИЯ"
+# --- ТОП ЛИГ С ВЫСОКИМ % ГОЛА ВО 2-М ПЕРИОДЕ ---
+# Оставляем только те, где ТБ 0.5 во втором периоде заходит чаще всего
+STAT_LEAGUES = [
+    "НХЛ", "NHL", "АХЛ", "AHL", "OHL", "WHL", "QMJHL", # Сев. Америка (самые сочные)
+    "ГЕРМАНИЯ: ДЕЛ", "ГЕРМАНИЯ: ДЕЛ2", "ГЕРМАНИЯ: ОБЕРЛИГА", # Немцы всегда забивают во 2-м
+    "АВСТРИЯ", "АЛЬПИЙСКАЯ", # Очень результативные лиги
+    "ЧЕХИЯ: ЭКСТРАЛИГА", "ЧЕХИЯ: ПЕРВАЯ ЛИГА",
+    "ФИНЛЯНДИЯ: МЕСТИС", # Вторая лига Финляндии забивнее первой
+    "ШВЕЙЦАРИЯ: НАЦИОНАЛЬНАЯ ЛИГА",
+    "НОРВЕГИЯ", "ДАНИЯ", # Скандинавский «верх»
+    "МХЛ", "НМХЛ", # Наша молодежка — лидеры по голам во 2-м периоде
+    "КХЛ" # Только из-за мастерства
 ]
 
 class HockeyScanner:
@@ -32,7 +39,7 @@ class HockeyScanner:
         except: return ""
 
     async def run(self):
-        logger.info("=== СТАРТ v18.0 | ПОРОГ БРОСКОВ: 11+ ===")
+        logger.info(f"=== v20.0 СТАТ-АНАЛИЗ ЗАПУЩЕН | Лиг в базе: {len(STAT_LEAGUES)} ===")
         async with AsyncSession(impersonate="chrome110") as session:
             while True:
                 try:
@@ -43,65 +50,63 @@ class HockeyScanner:
                     sections = r.text.split('~ZA÷')
                     for sec in sections[1:]:
                         league_raw = sec.split('¬')[0]
-                        if not any(lg.upper() in league_raw.upper() for lg in ALLOWED_LEAGUES):
+                        # Проверка на вхождение в статистический топ
+                        if not any(lg.upper() in league_raw.upper() for lg in STAT_LEAGUES):
                             continue
                             
                         matches = sec.split('~AA÷')
                         for m_block in matches[1:]:
                             m_id = m_block.split('¬')[0]
-                            status = self._get_val(m_block, 'AC÷')
+                            status = self._get_val(m_block, 'AC÷') # Код 46 (перерыв)
                             
-                            # Проверяем перерыв 1-2 (Код 46)
                             if status == '46':
                                 h1 = self._get_val(m_block, 'BA÷')
                                 a1 = self._get_val(m_block, 'BB÷')
-                                
                                 if h1 == "" or a1 == "":
                                     h1, a1 = self._get_val(m_block, 'AG÷'), self._get_val(m_block, 'AH÷')
 
                                 if h1 != "" and a1 != "":
                                     score = (int(h1), int(a1))
-                                    # Наша база: 0:0, 1:0, 0:1
+                                    # Наш фильтр счета: 0:0, 1:0, 0:1
                                     if score in [(0, 0), (1, 0), (0, 1)]:
                                         
-                                        # Броски в створ (AS - хозяева, AT - гости)
+                                        # Достаем броски (агрессия)
                                         s_h = self._get_val(m_block, 'AS÷') 
                                         s_a = self._get_val(m_block, 'AT÷')
-                                        
                                         total_shots = (int(s_h) if s_h.isdigit() else 0) + (int(s_a) if s_a.isdigit() else 0)
 
-                                        # ФИЛЬТР: От 11 бросков
+                                        # ФИЛЬТР: Минимум 11 бросков для забивных лиг
                                         if total_shots >= 11:
                                             if m_id not in self.sent_cache:
                                                 home = self._get_val(m_block, 'AE÷')
                                                 away = self._get_val(m_block, 'AF÷')
                                                 link = f"https://www.flashscore.ru/match/{m_id}/#/match-summary"
                                                 
-                                                # Визуальный индикатор
-                                                if total_shots >= 18: status_icon = "🔥 ОПАСНО"
-                                                elif total_shots >= 14: status_icon = "⚡️ АКТИВНО"
-                                                else: status_icon = "🏒 НОРМА"
+                                                # Логика анализа вероятности
+                                                if total_shots >= 17:
+                                                    prob = "ВЫСОКАЯ (🔥)"
+                                                    recom = "Вход на ТБ 0.5 до 30-й минуты!"
+                                                else:
+                                                    prob = "СРЕДНЯЯ (📈)"
+                                                    recom = "Ловим кэф 1.65+ на ТБ 0.5 во 2-м"
 
                                                 text = (
-                                                    f"🧨 **АЛГОРИТМ 1-Б (11+)**\n\n"
+                                                    f"🎯 **АНАЛИЗ: ГОЛ ВО 2-М ПЕРИОДЕ**\n\n"
                                                     f"🏒 {home} **{h1}:{a1}** {away}\n"
                                                     f"🏆 {league_raw}\n\n"
-                                                    f"📊 Броски в створ: `{total_shots}`\n"
-                                                    f"Ранг: {status_icon}\n\n"
-                                                    f"⏱ **Ждем гол до 30-й минуты!**\n"
-                                                    f"🔗 [АНАЛИЗ МАТЧА]({link})"
+                                                    f"📊 Броски в 1-м: `{total_shots}`\n"
+                                                    f"📊 Вероятность: {prob}\n"
+                                                    f"💡 План: {recom}\n\n"
+                                                    f"🔗 [ОТКРЫТЬ МАТЧ]({link})"
                                                 )
                                                 
                                                 await bot.send_message(CHANNEL_ID, text, parse_mode="Markdown", disable_web_page_preview=True)
                                                 self.sent_cache.add(m_id)
-                                                logger.info(f"✅ ОТПРАВЛЕНО: {home}-{away} ({total_shots} бр.)")
-                                        else:
-                                            if m_id not in self.sent_cache:
-                                                logger.info(f"⏭ Мало бросков ({total_shots}): {home}-{away}")
+                                                logger.info(f"✅ Аналитический сигнал: {home}-{away}")
 
                     if len(self.sent_cache) > 1000: self.sent_cache.clear()
                 except Exception as e:
-                    logger.error(f"Ошибка: {e}")
+                    logger.error(f"Ошибка анализа: {e}")
                 await asyncio.sleep(30)
 
 if __name__ == "__main__":
