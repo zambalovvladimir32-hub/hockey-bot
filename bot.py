@@ -38,57 +38,66 @@ async def get_data():
                 logger.error(f"Ошибка сети: {e}")
     return combined
 
-def parse_brute(data):
+def parse_terminator(data):
     matches = []
-    for section in data.split('~ZA÷')[1:]:
-        league = section.split('¬')[0]
-        for block in section.split('~AA÷')[1:]:
-            try:
-                # Берем только Лайв (AB=3)
-                if 'AB÷3' not in block: continue
+    # Сначала разбиваем на лиги, чтобы знать названия турниров
+    sections = data.split('~ZA÷')
+    for section in sections[1:]:
+        try:
+            league = section.split('¬')[0]
+            # Внутри лиги бьем на матчи
+            blocks = section.split('~AA÷')
+            for block in blocks[1:]:
+                if 'AB÷' not in block: continue
                 
-                # Вытаскиваем все поля статуса для отладки
-                js = block.split('JS÷')[1].split('¬')[0] if 'JS÷' in block else "?"
-                tt = block.split('TT÷')[1].split('¬')[0] if 'TT÷' in block else "?"
+                # AB: 3 - это Лайв
+                # AC: 45 - Перерыв после 1-го, 2 - Второй период
+                ab = block.split('AB÷')[1].split('¬')[0]
+                ac = block.split('AC÷')[1].split('¬')[0] if 'AC÷' in block else ""
                 
-                # Печатаем в лог всё, что видим по живым играм (чтобы найти П2)
-                logger.info(f"DEBUG LIVE: {block[:80]} | JS:{js} | TT:{tt}")
+                is_break = (ac == '45')
+                is_2nd_period = (ac == '2')
 
-                # Условие: если в статусе есть 2, P2, П2 или код JS=2/6
-                is_target = any(x in tt.upper() for x in ['2', 'П2', 'P2']) or js in ['2', '6']
-                
-                if is_target:
-                    home = block.split('AE÷')[1].split('¬')[0]
-                    away = block.split('AF÷')[1].split('¬')[0]
+                if (ab == '3' and (is_break or is_2nd_period)):
+                    # Извлекаем названия команд
+                    home = block.split('AE÷')[1].split('¬')[0] if 'AE÷' in block else "Home"
+                    away = block.split('AF÷')[1].split('¬')[0] if 'AF÷' in block else "Away"
+                    
+                    # Счет
                     s_h = block.split('AG÷')[1].split('¬')[0] if 'AG÷' in block else "0"
                     s_a = block.split('AH÷')[1].split('¬')[0] if 'AH÷' in block else "0"
                     
+                    status_label = "⏱ 2-Й ПЕРИОД" if is_2nd_period else "☕️ ПЕРЕРЫВ (1-2)"
+                    
                     matches.append({
-                        'id': f"{home}{away}{s_h}{s_a}",
-                        'text': f"🏒 **{home} {s_h}:{s_a} {away}**\n🏆 {league}\n⏱ Статус: {tt} (JS:{js})"
+                        'id': f"{home}{away}{s_h}{s_a}{ac}",
+                        'text': f"🏒 **{home} {s_h}:{s_a} {away}**\n🏆 {league}\n{status_label}"
                     })
-            except:
-                continue
+        except:
+            continue
     return matches
 
 async def main():
-    logger.info("🛠 ЗАПУСК КУВАЛДЫ (БРУТФОРС ПЕРИОДОВ)")
+    logger.info("🤖 ТЕРМИНАТОР ЗАПУЩЕН (Фильтр по AC:45/2)")
     last_sent = set()
 
     while True:
         raw = await get_data()
         if raw:
-            found = parse_brute(raw)
-            logger.info(f"🔎 Найдено в Лайве: {len(found)}")
+            found = parse_terminator(raw)
+            logger.info(f"🔎 Найдено подходящих: {len(found)}")
             
             for m in found:
                 if m['id'] not in last_sent:
                     try:
                         await bot.send_message(CHANNEL_ID, m['text'], parse_mode="Markdown")
                         last_sent.add(m['id'])
-                    except: pass
+                        logger.info(f"✅ Отправлено: {m['id']}")
+                    except Exception as e:
+                        logger.error(f"Ошибка ТГ: {e}")
         
-        if len(last_sent) > 300: last_sent.clear()
+        # Очистка памяти раз в час
+        if len(last_sent) > 500: last_sent.clear()
         await asyncio.sleep(40)
 
 if __name__ == "__main__":
