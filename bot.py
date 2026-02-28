@@ -21,7 +21,6 @@ bot = Bot(token=TOKEN)
 
 class HockeyScanner:
     def __init__(self):
-        # Опрашиваем все доступные лайв-матчи по хоккею
         self.url = "https://www.flashscore.ru/x/feed/f_4_0_3_ru-ru_1"
         self.headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/122.0.0.0 Safari/537.36",
@@ -29,7 +28,7 @@ class HockeyScanner:
             "x-requested-with": "XMLHttpRequest",
             "Referer": "https://www.flashscore.ru/"
         }
-        self.sent_cache = set() # Теперь храним просто ID матчей, так как шлем только 1 раз в перерыв
+        self.sent_cache = set()
 
     def _get_val(self, block, tag):
         try:
@@ -44,20 +43,17 @@ class HockeyScanner:
         ac_code = self._get_val(block, 'AC÷')
         timer = self._get_val(block, 'TT÷').upper()
         
-        # Код 45 - перерыв между 1 и 2 периодом. 
-        # Если статус 2 (идет 2-й период) или любой другой - сразу пропускаем!
         is_break = (ac_code == '45' or "ПЕРЕРЫВ" in timer or "PAUSE" in timer)
         
-        # Исключаем перерыв перед 3-м периодом (код 46) или конец матча
         if not is_break or ac_code in ['46', '3', '6', '2']:
             return None
 
         # 2. ПРОВЕРКА СЧЕТА 1-ГО ПЕРИОДА
-        ba = self._get_val(block, 'BA÷') # Голы хозяев в 1-м
-        bb = self._get_val(block, 'BB÷') # Голы гостей в 1-м
+        ba = self._get_val(block, 'BA÷')
+        bb = self._get_val(block, 'BB÷')
         
         if not ba or not bb:
-            return None # 1-й период еще не завершен, данных нет
+            return None
 
         try:
             h1 = int(ba)
@@ -68,9 +64,8 @@ class HockeyScanner:
         # 3. ФИЛЬТР НУЖНЫХ СЧЕТОВ: 0:0, 1:0, 0:1
         valid_scores = [(0, 0), (1, 0), (0, 1)]
         if (h1, a1) not in valid_scores:
-            return None # Счет другой (например 1:1 или 2:0) - пропускаем
+            return None
 
-        # ОФОРМЛЕНИЕ УВЕДОМЛЕНИЯ
         home = self._get_val(block, 'AE÷')
         away = self._get_val(block, 'AF÷')
 
@@ -85,19 +80,29 @@ class HockeyScanner:
         }
 
     async def run(self):
-        logger.info("=== HOCKEY BREAK SCANNER v11.0 STARTED ===")
+        logger.info("=== HOCKEY BREAK SCANNER v11.1 (DEBUG) STARTED ===")
         logger.info("Условия: Любая лига | Только Перерыв 1-2 | Счет 0:0, 1:0, 0:1")
+        
+        loops_count = 0
         
         async with AsyncSession(impersonate="chrome110") as session:
             while True:
                 try:
                     r = await session.get(f"{self.url}?t={int(time.time())}", headers=self.headers, timeout=20)
+                    
                     if r.status_code != 200:
-                        await asyncio.sleep(5)
+                        logger.warning(f"⚠️ Ошибка от Flashscore! Код ответа: {r.status_code}. Ждем 15 сек...")
+                        await asyncio.sleep(15)
                         continue
 
                     sections = r.text.split('~ZA÷')
+                    live_matches = sum(len(sec.split('~AA÷')) - 1 for sec in sections[1:])
                     
+                    loops_count += 1
+                    # Пишем пульс каждые 5 минут (каждый 10-й цикл по 30 сек)
+                    if loops_count % 10 == 0: 
+                        logger.info(f"ℹ️ Бот сканирует... В лайве сейчас матчей: {live_matches}. Ищу нужный перерыв...")
+
                     for sec in sections[1:]:
                         league = sec.split('¬')[0]
                         matches = sec.split('~AA÷')
@@ -108,27 +113,24 @@ class HockeyScanner:
                             if match:
                                 m_id = match['id']
                                 
-                                # Отправляем только если еще не присылали этот матч
                                 if m_id not in self.sent_cache:
                                     try:
                                         await bot.send_message(CHANNEL_ID, match['text'], parse_mode="Markdown")
                                         self.sent_cache.add(m_id)
-                                        logger.info(f"✅ Отправлено: {m_id} (Счет 1-го периода подходит)")
-                                        await asyncio.sleep(1) # Защита от спам-блока Telegram
+                                        logger.info(f"✅ ОТПРАВЛЕН МАТЧ: {m_id}")
+                                        await asyncio.sleep(1) 
                                     except TelegramRetryAfter as e:
+                                        logger.warning(f"⏳ Флуд-контроль TG, ждем {e.retry_after} сек...")
                                         await asyncio.sleep(e.retry_after)
                                     except Exception as e:
                                         logger.error(f"Ошибка отправки TG: {e}")
 
-                    # Очистка памяти каждые 12-24 часа (500 матчей хватит за глаза)
                     if len(self.sent_cache) > 500: 
                         self.sent_cache.clear()
-                        logger.info("🧹 Кэш отправленных матчей очищен")
 
                 except Exception as e:
-                    logger.error(f"Ошибка цикла парсинга: {e}")
+                    logger.error(f"❌ Ошибка цикла: {e}")
                 
-                # Интервал опроса - 30 секунд
                 await asyncio.sleep(30)
 
 if __name__ == "__main__":
