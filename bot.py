@@ -38,45 +38,57 @@ async def get_data():
                 logger.error(f"Ошибка сети: {e}")
     return combined
 
-def parse_spy(data):
+def parse_ultra(data):
     matches = []
-    for block in data.split('~AA÷')[1:]:
-        try:
-            # Ищем наш "невидимый" матч по названию команд
-            if "Tohoku" in block or "Kobe" in block or "Коби" in block:
-                # ВЫВОДИМ В ЛОГ ВСЁ "ДНК" МАТЧА
-                logger.info(f"🎯 МАТЧ НАЙДЕН! Сырые данные: {block[:150]}")
-            
-            # Пытаемся поймать его расширенным фильтром
-            # Проверяем все возможные коды лайва (3) и периодов
-            ab = block.split('AB÷')[1].split('¬')[0] if 'AB÷' in block else ""
-            ac = block.split('AC÷')[1].split('¬')[0] if 'AC÷' in block else ""
-            
-            # Если это лайв и хоть какой-то намек на 2-й период или перерыв
-            if ab == '3' and ac in ['2', '45', '6', '12', '13', '14']:
-                home = block.split('AE÷')[1].split('¬')[0]
-                away = block.split('AF÷')[1].split('¬')[0]
-                s_h = block.split('AG÷')[1].split('¬')[0] if 'AG÷' in block else "0"
-                s_a = block.split('AH÷')[1].split('¬')[0] if 'AH÷' in block else "0"
+    sections = data.split('~ZA÷')
+    for section in sections[1:]:
+        league = section.split('¬')[0]
+        blocks = section.split('~AA÷')
+        for block in blocks[1:]:
+            try:
+                # AB: 2 или 3 — это живой матч (теперь ловим и Азию)
+                ab = block.split('AB÷')[1].split('¬')[0] if 'AB÷' in block else ""
+                if ab not in ['2', '3']: continue
+
+                # CR: 2 — это железно Второй период
+                # AC: 45 — это Перерыв после 1-го
+                cr = block.split('CR÷')[1].split('¬')[0] if 'CR÷' in block else ""
+                ac = block.split('AC÷')[1].split('¬')[0] if 'AC÷' in block else ""
                 
-                matches.append({
-                    'id': f"{home}{away}{ac}",
-                    'text': f"🏒 **{home} {s_h}:{s_a} {away}**\n⏱ Код периода (AC): {ac}"
-                })
-        except: continue
+                if cr == '2' or ac == '45':
+                    home = block.split('AE÷')[1].split('¬')[0]
+                    away = block.split('AF÷')[1].split('¬')[0]
+                    s_h = block.split('AG÷')[1].split('¬')[0] if 'AG÷' in block else "0"
+                    s_a = block.split('AH÷')[1].split('¬')[0] if 'AH÷' in block else "0"
+                    
+                    status = "☕️ ПЕРЕРЫВ (1-2)" if ac == '45' else "⏱ 2-Й ПЕРИОД"
+                    
+                    matches.append({
+                        'id': f"{home}{away}{ac}{cr}",
+                        'text': f"🏒 **{home} {s_h}:{s_a} {away}**\n🏆 {league}\n{status}"
+                    })
+            except: continue
     return matches
 
 async def main():
-    logger.info("🕵️‍♂️ ЗАПУЩЕН РЕЖИМ ШПИОНА")
+    logger.info("🚀 ULTRA-DETECTOR ЗАПУЩЕН. Охота на CR:2 и AB:2/3")
+    last_sent = set()
+
     while True:
         raw = await get_data()
         if raw:
-            found = parse_spy(raw)
+            found = parse_ultra(raw)
+            logger.info(f"🔎 Найдено в эфире: {len(found)}")
+            
             for m in found:
-                try:
-                    await bot.send_message(CHANNEL_ID, m['text'], parse_mode="Markdown")
-                    logger.info(f"✅ Улетело в канал: {m['text']}")
-                except: pass
+                if m['id'] not in last_sent:
+                    try:
+                        await bot.send_message(CHANNEL_ID, m['text'], parse_mode="Markdown")
+                        last_sent.add(m['id'])
+                        logger.info(f"✅ Отправлено: {m['text'][:30]}...")
+                    except: pass
+        
+        if len(last_sent) > 500: last_sent.clear()
         await asyncio.sleep(40)
 
 if __name__ == "__main__":
