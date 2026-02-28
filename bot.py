@@ -3,33 +3,17 @@ from aiogram import Bot
 from curl_cffi.requests import AsyncSession
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s', handlers=[logging.StreamHandler(sys.stdout)])
-logger = logging.getLogger("HockeyMaxLeagues")
+logger = logging.getLogger("Hockey11Plus")
 
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHANNEL_ID = os.getenv("CHANNEL_ID")
 bot = Bot(token=TOKEN)
 
-# --- МАКСИМАЛЬНО РАСШИРЕННЫЙ СПИСОК ЛИГ ---
+# Расширенный список лиг
 ALLOWED_LEAGUES = [
-    # Россия и СНГ
-    "КХЛ", "ВХЛ", "МХЛ", "НМХЛ", "БЕЛАРУСЬ", "КАЗАХСТАН",
-    # Северная Америка
-    "НХЛ", "NHL", "АХЛ", "AHL", "ECHL", "OHL", "WHL", "QMJHL", "NCAA",
-    # Финляндия
-    "ФИНЛЯНДИЯ: ЛИГА", "ФИНЛЯНДИЯ: МЕСТИС", "ФИНЛЯНДИЯ: СУОМИ-СЕРИЯ",
-    # Швеция
-    "ШВЕЦИЯ: ШВЕЦКАЯ ХОККЕЙНАЯ ЛИГА", "ШВЕЦИЯ: АЛЛСВЕНСКАН", "ШВЕЦИЯ: ДИВИЗИОН 1",
-    # Германия
-    "ГЕРМАНИЯ: ДЕЛ", "ГЕРМАНИЯ: ДЕЛ2", "ГЕРМАНИЯ: ОБЕРЛИГА",
-    # Чехия
-    "ЧЕХИЯ: ЭКСТРАЛИГА", "ЧЕХИЯ: ПЕРВАЯ ЛИГА", "ЧЕХИЯ: ВТОРАЯ ЛИГА",
-    # Швейцария
-    "ШВЕЙЦАРИЯ: НАЦИОНАЛЬНАЯ ЛИГА", "ШВЕЙЦАРИЯ: СВИСС ЛИГА",
-    # Остальная Европа
-    "АВСТРИЯ: ИСЕХОККЕЙ", "АВСТРИЯ: АЛЬПИЙСКАЯ", "НОРВЕГИЯ", "ДАНИЯ", 
-    "СЛОВАКИЯ", "ПОЛЬША", "ФРАНЦИЯ", "ВЕЛИКОБРИТАНИЯ", "ИТАЛИЯ", "ВЕНГРИЯ",
-    # Азия и Мир
-    "АЗИАТСКАЯ ЛИГА", "АЛЬПИЙСКАЯ ЛИГА", "ЧЕМПИОНОВ", "ЕВРОТУР"
+    "КХЛ", "ВХЛ", "МХЛ", "НХЛ", "NHL", "АХЛ", "AHL", "ECHL", "OHL", "WHL", "QMJHL",
+    "ФИНЛЯНДИЯ", "ШВЕЦИЯ", "ГЕРМАНИЯ", "ЧЕХИЯ", "ШВЕЙЦАРИЯ", "АВСТРИЯ", "НОРВЕГИЯ",
+    "ДАНИЯ", "СЛОВАКИЯ", "ПОЛЬША", "БЕЛАРУСЬ", "КАЗАХСТАН", "ФРАНЦИЯ", "ИТАЛИЯ"
 ]
 
 class HockeyScanner:
@@ -47,13 +31,8 @@ class HockeyScanner:
         try: return block.split(tag)[1].split('¬')[0].strip()
         except: return ""
 
-    def is_league_allowed(self, league_name):
-        ln = league_name.upper()
-        # Проверяем, есть ли хоть одно ключевое слово из списка в названии лиги
-        return any(allowed.upper() in ln for allowed in ALLOWED_LEAGUES)
-
     async def run(self):
-        logger.info(f"=== v16.0 STARTED | Расширенный фильтр: {len(ALLOWED_LEAGUES)} направлений ===")
+        logger.info("=== СТАРТ v18.0 | ПОРОГ БРОСКОВ: 11+ ===")
         async with AsyncSession(impersonate="chrome110") as session:
             while True:
                 try:
@@ -64,9 +43,7 @@ class HockeyScanner:
                     sections = r.text.split('~ZA÷')
                     for sec in sections[1:]:
                         league_raw = sec.split('¬')[0]
-                        
-                        # Фильтр по лигам
-                        if not self.is_league_allowed(league_raw):
+                        if not any(lg.upper() in league_raw.upper() for lg in ALLOWED_LEAGUES):
                             continue
                             
                         matches = sec.split('~AA÷')
@@ -74,39 +51,53 @@ class HockeyScanner:
                             m_id = m_block.split('¬')[0]
                             status = self._get_val(m_block, 'AC÷')
                             
-                            # Наш рабочий код перерыва 1-2
+                            # Проверяем перерыв 1-2 (Код 46)
                             if status == '46':
                                 h1 = self._get_val(m_block, 'BA÷')
                                 a1 = self._get_val(m_block, 'BB÷')
                                 
-                                # Запасной забор счета, если BA/BB еще пусты
                                 if h1 == "" or a1 == "":
-                                    h1 = self._get_val(m_block, 'AG÷')
-                                    a1 = self._get_val(m_block, 'AH÷')
+                                    h1, a1 = self._get_val(m_block, 'AG÷'), self._get_val(m_block, 'AH÷')
 
                                 if h1 != "" and a1 != "":
-                                    try:
-                                        score = (int(h1), int(a1))
-                                        # Условие: Гол во 2-м периоде (счет 0:0, 1:0, 0:1)
-                                        if score in [(0, 0), (1, 0), (0, 1)]:
+                                    score = (int(h1), int(a1))
+                                    # Наша база: 0:0, 1:0, 0:1
+                                    if score in [(0, 0), (1, 0), (0, 1)]:
+                                        
+                                        # Броски в створ (AS - хозяева, AT - гости)
+                                        s_h = self._get_val(m_block, 'AS÷') 
+                                        s_a = self._get_val(m_block, 'AT÷')
+                                        
+                                        total_shots = (int(s_h) if s_h.isdigit() else 0) + (int(s_a) if s_a.isdigit() else 0)
+
+                                        # ФИЛЬТР: От 11 бросков
+                                        if total_shots >= 11:
                                             if m_id not in self.sent_cache:
                                                 home = self._get_val(m_block, 'AE÷')
                                                 away = self._get_val(m_block, 'AF÷')
                                                 link = f"https://www.flashscore.ru/match/{m_id}/#/match-summary"
                                                 
+                                                # Визуальный индикатор
+                                                if total_shots >= 18: status_icon = "🔥 ОПАСНО"
+                                                elif total_shots >= 14: status_icon = "⚡️ АКТИВНО"
+                                                else: status_icon = "🏒 НОРМА"
+
                                                 text = (
-                                                    f"🧨 **ГОЛ ВО 2-М ПЕРИОДЕ? (Лига+)**\n\n"
+                                                    f"🧨 **АЛГОРИТМ 1-Б (11+)**\n\n"
                                                     f"🏒 {home} **{h1}:{a1}** {away}\n"
                                                     f"🏆 {league_raw}\n\n"
-                                                    f"📊 Счет после 1-го: `{h1}:{a1}`\n"
+                                                    f"📊 Броски в створ: `{total_shots}`\n"
+                                                    f"Ранг: {status_icon}\n\n"
+                                                    f"⏱ **Ждем гол до 30-й минуты!**\n"
                                                     f"🔗 [АНАЛИЗ МАТЧА]({link})"
                                                 )
                                                 
                                                 await bot.send_message(CHANNEL_ID, text, parse_mode="Markdown", disable_web_page_preview=True)
                                                 self.sent_cache.add(m_id)
-                                                logger.info(f"✅ СИГНАЛ: {league_raw} | {home}-{away}")
-                                    except ValueError:
-                                        continue
+                                                logger.info(f"✅ ОТПРАВЛЕНО: {home}-{away} ({total_shots} бр.)")
+                                        else:
+                                            if m_id not in self.sent_cache:
+                                                logger.info(f"⏭ Мало бросков ({total_shots}): {home}-{away}")
 
                     if len(self.sent_cache) > 1000: self.sent_cache.clear()
                 except Exception as e:
