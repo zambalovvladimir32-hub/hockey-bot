@@ -38,7 +38,7 @@ async def get_data():
                 logger.error(f"Ошибка сети: {e}")
     return combined
 
-def parse_perfect_second(data):
+def parse_strict_second(data):
     matches = []
     sections = data.split('~ZA÷')
     
@@ -50,72 +50,64 @@ def parse_perfect_second(data):
             try:
                 if 'AB÷' not in block: continue
                 
-                # Коды состояния
-                ac = block.split('AC÷')[1].split('¬')[0] if 'AC÷' in block else ""
-                cr = block.split('CR÷')[1].split('¬')[0] if 'CR÷' in block else ""
-                tt = block.split('TT÷')[1].split('¬')[0] if 'TT÷' in block else ""
-                
-                # --- ГЛАВНЫЙ ФИЛЬТР: ПРОВЕРКА СЧЕТА ---
-                # XA - счет 1-го периода. Если его нет, это 100% первый период.
-                # XB - счет 2-го периода. Если он уже есть, значит 2-й период кончился.
-                has_1st_period = 'XA÷' in block
-                has_2nd_period_ended = 'XB÷' in block
+                # Системные коды Flashscore
+                ab = block.split('AB÷')[1].split('¬')[0]  # Статус (LIVE/Ожидание)
+                ac = block.split('AC÷')[1].split('¬')[0] if 'AC÷' in block else "" # Подстатус
+                cr = block.split('CR÷')[1].split('¬')[0] if 'CR÷' in block else "" # Текущий период
+                tt = block.split('TT÷')[1].split('¬')[0] if 'TT÷' in block else "" # Текст времени (напр. 25')
 
-                if not has_1st_period or has_2nd_period_ended:
+                # 1. Берем только те, что в эфире
+                if ab not in ['2', '3']: continue
+
+                # 2. ЖЕСТКИЙ ФИЛЬТР ПЕРИОДОВ
+                # Если видим коды 1-го или 3-го периода — сразу пропускаем.
+                # AC 1=1й пер, 3=3й пер, 46=перерыв перед 3-м.
+                # CR 1=1й пер, 3=3й пер.
+                if ac in ['1', '3', '46', '4', '5'] or cr in ['1', '3']:
                     continue
 
-                # Дополнительная проверка: если в тексте времени есть "1", "P1" или "1-й" - в топку
-                time_text = tt.upper()
-                if any(x in time_text for x in ["1", "P1", "1-Й"]):
-                    continue
-
-                # Условие прохода: Перерыв (45) или Код 2-го периода (2 или 15)
+                # 3. ПРОВЕРКА НА 2-Й ПЕРИОД
+                # AC 45 — это всегда перерыв между 1 и 2 периодом.
+                # AC 2 или CR 2 — это всегда 2-й период.
+                # AC 15 — специфический код для Азиатских лиг (2-й период).
                 is_break = (ac == '45')
-                is_live_2nd = (ac in ['2', '15'] or cr == '2')
+                is_second_period = (ac in ['2', '15'] or cr == '2')
 
-                if is_break or is_live_2nd:
+                if is_break or is_second_period:
                     home = block.split('AE÷')[1].split('¬')[0]
                     away = block.split('AF÷')[1].split('¬')[0]
-                    
-                    # Берем ОБЩИЙ счет
                     s_h = block.split('AG÷')[1].split('¬')[0] if 'AG÷' in block else "0"
                     s_a = block.split('AH÷')[1].split('¬')[0] if 'AH÷' in block else "0"
                     
-                    # Берем счет ТОЛЬКО 1-го периода для информативности
-                    score_1p = block.split('XA÷')[1].split('¬')[0]
-                    
-                    status_label = "☕️ ПЕРЕРЫВ (1-2)" if is_break else "⏱ 2-Й ПЕРИОД"
-                    if tt and tt != "?": status_label += f" [{tt}]"
+                    status = "☕️ ПЕРЕРЫВ (1-2)" if is_break else "⏱ 2-Й ПЕРИОД"
+                    if tt and tt != "?": status += f" [{tt}]"
 
                     matches.append({
-                        # Уникальный ID, чтобы не спамить один и тот же матч при каждом обновлении времени
-                        'id': f"{home}{away}{is_break}{ac}", 
-                        'text': f"🏒 **{home} {s_h}:{s_a} {away}**\n🏆 {league}\n{status_label}\n(1-й период: {score_1p})"
+                        'id': f"{home}{away}{s_h}{s_a}{is_break}",
+                        'text': f"🏒 **{home} {s_h}:{s_a} {away}**\n🏆 {league}\n{status}"
                     })
             except:
                 continue
     return matches
 
 async def main():
-    logger.info("🚀 ЗАПУСК БЕЗОШИБОЧНОГО СКАНЕРА (Контроль по периодам)")
+    logger.info("🎯 СКАНЕР 'ТОЛЬКО 2-Й ПЕРИОД' ВКЛЮЧЕН")
     last_sent = set()
 
     while True:
         raw = await get_data()
         if raw:
-            found = parse_perfect_second(raw)
-            logger.info(f"🔎 Найдено чистых матчей 2-го периода: {len(found)}")
+            found = parse_strict_second(raw)
+            logger.info(f"🔎 В эфире 2-го периода: {len(found)} матчей")
             
             for m in found:
                 if m['id'] not in last_sent:
                     try:
                         await bot.send_message(CHANNEL_ID, m['text'], parse_mode="Markdown")
                         last_sent.add(m['id'])
-                    except Exception as e:
-                        logger.error(f"Ошибка ТГ: {e}")
+                    except: pass
         
-        # Очистка старых ID раз в час (примерно)
-        if len(last_sent) > 1000: last_sent.clear()
+        if len(last_sent) > 500: last_sent.clear()
         await asyncio.sleep(40)
 
 if __name__ == "__main__":
