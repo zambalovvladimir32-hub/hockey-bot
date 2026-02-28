@@ -14,10 +14,10 @@ PROXY = os.getenv("PROXY_URL")
 
 bot = Bot(token=TOKEN)
 
-# Мы будем опрашивать сразу два фида для максимального охвата
+# Используем оба фида для максимального охвата
 URLS = [
-    "https://www.flashscore.ru/x/feed/f_4_0_3_ru-ru_1", # Общий фид
-    "https://www.flashscore.ru/x/feed/f_4_1_3_ru-ru_1"  # Топ-лиги
+    "https://www.flashscore.ru/x/feed/f_4_0_3_ru-ru_1",
+    "https://www.flashscore.ru/x/feed/f_4_1_3_ru-ru_1"
 ]
 
 async def get_combined_data():
@@ -37,67 +37,76 @@ async def get_combined_data():
                 if r.status_code == 200:
                     all_raw += r.text
             except Exception as e:
-                logger.error(f"⚠️ Ошибка запроса к {url}: {e}")
+                logger.error(f"⚠️ Ошибка запроса: {e}")
     return all_raw
 
 def parse(data):
     matches = []
-    # Сначала найдем лиги (они начинаются с ~ZA÷)
     sections = data.split('~ZA÷')
     
     for section in sections[1:]:
         try:
             league_name = section.split('¬')[0]
-            # Внутри секции лиги ищем матчи (~AA÷)
             blocks = section.split('~AA÷')
             for block in blocks[1:]:
-                if 'AG÷' not in block: continue # Пропускаем неначатые
+                if 'AG÷' not in block: continue
                 
-                home = block.split('AE÷')[1].split('¬')[0]
-                away = block.split('AF÷')[1].split('¬')[0]
-                s_h = block.split('AG÷')[1].split('¬')[0]
-                s_a = block.split('AH÷')[1].split('¬')[0]
+                # Читаем код статуса JS
+                status_code = block.split('JS÷')[1].split('¬')[0] if 'JS÷' in block else '0'
                 
-                status = "LIVE"
-                if 'JS÷' in block:
-                    val = block.split('JS÷')[1].split('¬')[0]
-                    status_map = {'1':'1-й','2':'2-й','3':'3-й','6':'Пауза','10':'ОТ','11':'Бул.'}
-                    status = status_map.get(val, "LIVE")
-
-                matches.append({
-                    'text': f"🏒 **{home} {s_h}:{s_a} {away}**\n🏆 {league_name} | ⏱ {status}",
-                    'id': f"{home}{away}{s_h}{s_a}" # Ключ для отслеживания изменений
-                })
+                # УСЛОВИЕ: 
+                # Код '6' = Перерыв (обычно после 1-го или 2-го)
+                # Код '2' = Идет 2-й период
+                is_break = status_code == '6'
+                is_second_period = status_code == '2'
+                
+                # Дополнительная проверка: если перерыв, то после какого периода?
+                # Flashscore иногда пишет номер периода в поле 'LP' или 'TT'
+                period_num = block.split('TT÷')[1].split('¬')[0] if 'TT÷' in block else ""
+                
+                # Нам нужны только те, где:
+                # 1. Либо явно 2-й период (JS:2)
+                # 2. Либо перерыв (JS:6), но мы видим, что 1-й период уже закончен
+                if is_second_period or (is_break and ("1" in period_num or "2" not in period_num)):
+                    home = block.split('AE÷')[1].split('¬')[0]
+                    away = block.split('AF÷')[1].split('¬')[0]
+                    s_h = block.split('AG÷')[1].split('¬')[0]
+                    s_a = block.split('AH÷')[1].split('¬')[0]
+                    
+                    status_text = "⏱ 2-й ПЕРИОД" if is_second_period else "☕️ ПЕРЕРЫВ (после 1-го)"
+                    
+                    matches.append({
+                        'text': f"🏒 **{home} {s_h}:{s_a} {away}**\n🏆 {league_name}\n{status_text}",
+                        'id': f"{home}{away}{status_code}{s_h}{s_a}" 
+                    })
         except:
             continue
     return matches
 
 async def main():
-    logger.info("📡 ЗАПУСК МАКСИМАЛЬНОГО СКАНЕРА")
-    last_sent = {} # Храним ID матча и его последнее состояние
+    logger.info("📡 СКАНЕР (ПЕРЕРЫВ + 2-Й ПЕРИОД) ЗАПУЩЕН")
+    last_sent = {}
 
     while True:
         raw_data = await get_combined_data()
         if raw_data:
             found = parse(raw_data)
-            logger.info(f"🔎 Всего в системе: {len(found)} активных игр")
+            logger.info(f"🔎 Найдено подходящих игр: {len(found)}")
             
             to_send = []
             for m in found:
                 m_id = m['id']
-                # Если матч новый или счет изменился
                 if m_id not in last_sent:
                     to_send.append(m['text'])
                     last_sent[m_id] = m['text']
             
             if to_send:
-                for i in range(0, len(to_send), 8):
-                    chunk = to_send[i:i+8]
-                    msg = "🥅 **LIVE ОБНОВЛЕНИЯ:**\n\n" + "\n\n".join(chunk)
+                for i in range(0, len(to_send), 5):
+                    chunk = to_send[i:i+5]
+                    msg = "🥅 **LIVE: ПЕРЕРЫВ / 2-Й ПЕРИОД**\n\n" + "\n\n".join(chunk)
                     await bot.send_message(CHANNEL_ID, msg, parse_mode="Markdown")
-                logger.info(f"📣 Дослано {len(to_send)} новых событий")
-        
-        # Чистим память (оставляем только последние 200 игр)
+            
+        # Чистим память раз в 3 часа
         if len(last_sent) > 500: last_sent.clear()
         await asyncio.sleep(60)
 
