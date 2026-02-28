@@ -14,7 +14,6 @@ PROXY = os.getenv("PROXY_URL")
 
 bot = Bot(token=TOKEN)
 
-# Используем оба фида для максимального охвата
 URLS = [
     "https://www.flashscore.ru/x/feed/f_4_0_3_ru-ru_1",
     "https://www.flashscore.ru/x/feed/f_4_1_3_ru-ru_1"
@@ -32,8 +31,7 @@ async def get_combined_data():
         proxies = {"http": PROXY, "https": PROXY} if PROXY else None
         for url in URLS:
             try:
-                ts_url = f"{url}?t={int(asyncio.get_event_loop().time())}"
-                r = await s.get(ts_url, headers=headers, proxies=proxies, timeout=15)
+                r = await s.get(f"{url}?t={int(asyncio.get_event_loop().time())}", headers=headers, proxies=proxies, timeout=15)
                 if r.status_code == 200:
                     all_raw += r.text
             except Exception as e:
@@ -45,53 +43,55 @@ def parse(data):
     sections = data.split('~ZA÷')
     
     for section in sections[1:]:
-        try:
-            league_name = section.split('¬')[0]
-            blocks = section.split('~AA÷')
-            for block in blocks[1:]:
+        league_name = section.split('¬')[0]
+        blocks = section.split('~AA÷')
+        for block in blocks[1:]:
+            try:
                 if 'AG÷' not in block: continue
                 
-                # Читаем код статуса JS
-                status_code = block.split('JS÷')[1].split('¬')[0] if 'JS÷' in block else '0'
+                # Статусы: AB=3 (Live), JS (детальный статус)
+                js_status = block.split('JS÷')[1].split('¬')[0] if 'JS÷' in block else ""
                 
-                # УСЛОВИЕ: 
-                # Код '6' = Перерыв (обычно после 1-го или 2-го)
-                # Код '2' = Идет 2-й период
-                is_break = status_code == '6'
-                is_second_period = status_code == '2'
+                # Ищем признаки 2-го периода или перерыва перед ним
+                # 2 - идет 2-й период
+                # 6 - перерыв
+                # Также проверяем наличие счета за 1-й период (XA÷), но отсутствие за 2-й (XB÷)
+                is_second = (js_status == '2')
+                is_break = (js_status == '6')
                 
-                # Дополнительная проверка: если перерыв, то после какого периода?
-                # Flashscore иногда пишет номер периода в поле 'LP' или 'TT'
-                period_num = block.split('TT÷')[1].split('¬')[0] if 'TT÷' in block else ""
+                # Если перерыв, проверяем, что это именно после 1-го периода
+                # Обычно после 1-го периода появляется блок XA÷ (счет 1-го периода)
+                has_1st_period_score = 'XA÷' in block
+                has_2nd_period_score = 'XB÷' in block
                 
-                # Нам нужны только те, где:
-                # 1. Либо явно 2-й период (JS:2)
-                # 2. Либо перерыв (JS:6), но мы видим, что 1-й период уже закончен
-                if is_second_period or (is_break and ("1" in period_num or "2" not in period_num)):
+                if is_second or (is_break and has_1st_period_score and not has_2nd_period_score):
                     home = block.split('AE÷')[1].split('¬')[0]
                     away = block.split('AF÷')[1].split('¬')[0]
                     s_h = block.split('AG÷')[1].split('¬')[0]
                     s_a = block.split('AH÷')[1].split('¬')[0]
                     
-                    status_text = "⏱ 2-й ПЕРИОД" if is_second_period else "☕️ ПЕРЕРЫВ (после 1-го)"
+                    status_text = "⏱ 2-й ПЕРИОД" if is_second else "☕️ ПЕРЕРЫВ (после 1-го)"
                     
                     matches.append({
                         'text': f"🏒 **{home} {s_h}:{s_a} {away}**\n🏆 {league_name}\n{status_text}",
-                        'id': f"{home}{away}{status_code}{s_h}{s_a}" 
+                        'id': f"{home}{away}{s_h}{s_a}{js_status}"
                     })
-        except:
-            continue
+                elif js_status:
+                    # Лог для отладки, если матч в лайве, но не подошел под условия
+                    logger.debug(f"Пропущен матч: {js_status} | 1st Score: {has_1st_period_score}")
+            except:
+                continue
     return matches
 
 async def main():
-    logger.info("📡 СКАНЕР (ПЕРЕРЫВ + 2-Й ПЕРИОД) ЗАПУЩЕН")
+    logger.info("🚀 ОБНОВЛЕННЫЙ СКАНЕР ЗАПУЩЕН")
     last_sent = {}
 
     while True:
         raw_data = await get_combined_data()
         if raw_data:
             found = parse(raw_data)
-            logger.info(f"🔎 Найдено подходящих игр: {len(found)}")
+            logger.info(f"🔎 Найдено подходящих игр (2-й пер/Перерыв): {len(found)}")
             
             to_send = []
             for m in found:
@@ -105,8 +105,8 @@ async def main():
                     chunk = to_send[i:i+5]
                     msg = "🥅 **LIVE: ПЕРЕРЫВ / 2-Й ПЕРИОД**\n\n" + "\n\n".join(chunk)
                     await bot.send_message(CHANNEL_ID, msg, parse_mode="Markdown")
-            
-        # Чистим память раз в 3 часа
+                logger.info(f"📣 Отправлено сообщений: {len(to_send)}")
+        
         if len(last_sent) > 500: last_sent.clear()
         await asyncio.sleep(60)
 
