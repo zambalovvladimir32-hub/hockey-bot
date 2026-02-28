@@ -14,6 +14,7 @@ PROXY = os.getenv("PROXY_URL")
 
 bot = Bot(token=TOKEN)
 
+# Используем оба фида для 100% охвата всех лиг мира
 URLS = [
     "https://www.flashscore.ru/x/feed/f_4_0_3_ru-ru_1",
     "https://www.flashscore.ru/x/feed/f_4_1_3_ru-ru_1"
@@ -31,65 +32,86 @@ async def get_data():
         proxies = {"http": PROXY, "https": PROXY} if PROXY else None
         for url in URLS:
             try:
-                r = await s.get(f"{url}?t={int(asyncio.get_event_loop().time())}", headers=headers, proxies=proxies, timeout=15)
+                # Добавляем временную метку для обхода кэша
+                ts = int(asyncio.get_event_loop().time())
+                r = await s.get(f"{url}?t={ts}", headers=headers, proxies=proxies, timeout=15)
                 if r.status_code == 200:
                     combined += r.text
             except Exception as e:
                 logger.error(f"Ошибка сети: {e}")
     return combined
 
-def parse_ultra(data):
+def parse_universal(data):
     matches = []
     sections = data.split('~ZA÷')
+    
     for section in sections[1:]:
         league = section.split('¬')[0]
         blocks = section.split('~AA÷')
+        
         for block in blocks[1:]:
             try:
-                # AB: 2 или 3 — это живой матч (теперь ловим и Азию)
-                ab = block.split('AB÷')[1].split('¬')[0] if 'AB÷' in block else ""
+                if 'AB÷' not in block: continue
+                
+                # 1. Извлекаем все ключевые коды
+                ab = block.split('AB÷')[1].split('¬')[0] # Статус Live (2 или 3)
+                ac = block.split('AC÷')[1].split('¬')[0] if 'AC÷' in block else "" # Код периода (2-идет, 45-перерыв)
+                cr = block.split('CR÷')[1].split('¬')[0] if 'CR÷' in block else "" # НОМЕР периода (1, 2, 3)
+                tt = block.split('TT÷')[1].split('¬')[0] if 'TT÷' in block else "" # Текст времени (П2, 2nd, и т.д.)
+
+                # 2. ПРОВЕРКА: Это лайв? (AB:2 или AB:3)
                 if ab not in ['2', '3']: continue
 
-                # CR: 2 — это железно Второй период
-                # AC: 45 — это Перерыв после 1-го
-                cr = block.split('CR÷')[1].split('¬')[0] if 'CR÷' in block else ""
-                ac = block.split('AC÷')[1].split('¬')[0] if 'AC÷' in block else ""
-                
-                if cr == '2' or ac == '45':
+                # 3. ПРОВЕРКА: Это 2-й период или перерыв перед ним?
+                # - CR == 2 (самый точный признак 2-го периода)
+                # - AC == 45 (железный признак перерыва 1-2)
+                # - Или в тексте времени есть "2" или "П2" (резерв)
+                is_2nd_period = (cr == '2' or ac == '2' or '2' in tt or 'П2' in tt.upper())
+                is_break_1_2 = (ac == '45' or 'ПЕРЕРЫВ' in tt.upper())
+
+                if is_2nd_period or is_break_1_2:
                     home = block.split('AE÷')[1].split('¬')[0]
                     away = block.split('AF÷')[1].split('¬')[0]
                     s_h = block.split('AG÷')[1].split('¬')[0] if 'AG÷' in block else "0"
                     s_a = block.split('AH÷')[1].split('¬')[0] if 'AH÷' in block else "0"
                     
-                    status = "☕️ ПЕРЕРЫВ (1-2)" if ac == '45' else "⏱ 2-Й ПЕРИОД"
-                    
+                    status_text = "⏱ 2-Й ПЕРИОД" if is_2nd_period else "☕️ ПЕРЕРЫВ (1-2)"
+                    # Добавляем инфо о времени, если оно есть
+                    if tt and tt != "?": status_text += f" [{tt}]"
+
                     matches.append({
-                        'id': f"{home}{away}{ac}{cr}",
-                        'text': f"🏒 **{home} {s_h}:{s_a} {away}**\n🏆 {league}\n{status}"
+                        # ID включает счет, чтобы ловить изменения счета внутри 2-го периода
+                        'id': f"{home}{away}{s_h}{s_a}{is_break_1_2}", 
+                        'text': f"🏒 **{home} {s_h}:{s_a} {away}**\n🏆 {league}\n{status_text}"
                     })
-            except: continue
+            except:
+                continue
     return matches
 
 async def main():
-    logger.info("🚀 ULTRA-DETECTOR ЗАПУЩЕН. Охота на CR:2 и AB:2/3")
+    logger.info("🌍 ГЛОБАЛЬНЫЙ СКАНЕР ВСЕХ ЛИГ ЗАПУЩЕН")
     last_sent = set()
 
     while True:
         raw = await get_data()
         if raw:
-            found = parse_ultra(raw)
-            logger.info(f"🔎 Найдено в эфире: {len(found)}")
+            found = parse_universal(raw)
+            logger.info(f"🔎 Найдено подходящих игр: {len(found)}")
             
             for m in found:
                 if m['id'] not in last_sent:
                     try:
                         await bot.send_message(CHANNEL_ID, m['text'], parse_mode="Markdown")
                         last_sent.add(m['id'])
-                        logger.info(f"✅ Отправлено: {m['text'][:30]}...")
-                    except: pass
+                        logger.info(f"✅ Отправлено: {m['text'][:40]}...")
+                    except Exception as e:
+                        logger.error(f"Ошибка ТГ: {e}")
         
-        if len(last_sent) > 500: last_sent.clear()
-        await asyncio.sleep(40)
+        # Очистка памяти от старых матчей раз в час
+        if len(last_sent) > 800: last_sent.clear()
+        
+        # Пауза 45 секунд — оптимально, чтобы не забанили и не пропустить гол
+        await asyncio.sleep(45)
 
 if __name__ == "__main__":
     asyncio.run(main())
