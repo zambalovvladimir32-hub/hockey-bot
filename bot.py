@@ -49,66 +49,60 @@ def parse(data):
             try:
                 if 'AG÷' not in block: continue
                 
-                # Статусы: AB=3 (Live), JS (детальный статус)
+                # 1. Проверяем JS статус (2 - период, 6 - перерыв)
                 js_status = block.split('JS÷')[1].split('¬')[0] if 'JS÷' in block else ""
                 
-                # Ищем признаки 2-го периода или перерыва перед ним
-                # 2 - идет 2-й период
-                # 6 - перерыв
-                # Также проверяем наличие счета за 1-й период (XA÷), но отсутствие за 2-й (XB÷)
-                is_second = (js_status == '2')
-                is_break = (js_status == '6')
+                # 2. Проверяем поле времени (ТТ). Там часто пишут "2nd period" или "P2"
+                time_text = block.split('TT÷')[1].split('¬')[0] if 'TT÷' in block else ""
                 
-                # Если перерыв, проверяем, что это именно после 1-го периода
-                # Обычно после 1-го периода появляется блок XA÷ (счет 1-го периода)
-                has_1st_period_score = 'XA÷' in block
-                has_2nd_period_score = 'XB÷' in block
-                
-                if is_second or (is_break and has_1st_period_score and not has_2nd_period_score):
+                # 3. Проверяем наличие счета за 1-й и 2-й периоды
+                has_1st = 'XA÷' in block
+                has_2nd = 'XB÷' in block
+
+                # УСЛОВИЕ ЛОВУШКИ:
+                # - Если JS равен '2' ИЛИ в тексте времени есть '2'
+                # - ИЛИ если это перерыв ('6') и уже есть счет 1-го периода, но нет 2-го
+                is_second_period = (js_status == '2' or '2' in time_text)
+                is_break_after_1st = (js_status == '6' and has_1st and not has_2nd)
+
+                if is_second_period or is_break_after_1st:
                     home = block.split('AE÷')[1].split('¬')[0]
                     away = block.split('AF÷')[1].split('¬')[0]
                     s_h = block.split('AG÷')[1].split('¬')[0]
                     s_a = block.split('AH÷')[1].split('¬')[0]
                     
-                    status_text = "⏱ 2-й ПЕРИОД" if is_second else "☕️ ПЕРЕРЫВ (после 1-го)"
-                    
+                    # Формируем статус для сообщения
+                    status = "⏱ 2-й ПЕРИОД"
+                    if is_break_after_1st: status = "☕️ ПЕРЕРЫВ (после 1-го)"
+                    if time_text: status += f" ({time_text})"
+
                     matches.append({
-                        'text': f"🏒 **{home} {s_h}:{s_a} {away}**\n🏆 {league_name}\n{status_text}",
-                        'id': f"{home}{away}{s_h}{s_a}{js_status}"
+                        'text': f"🏒 **{home} {s_h}:{s_a} {away}**\n🏆 {league_name}\n{status}",
+                        'id': f"{home}{away}{s_h}{s_a}" 
                     })
-                elif js_status:
-                    # Лог для отладки, если матч в лайве, но не подошел под условия
-                    logger.debug(f"Пропущен матч: {js_status} | 1st Score: {has_1st_period_score}")
             except:
                 continue
     return matches
 
 async def main():
-    logger.info("🚀 ОБНОВЛЕННЫЙ СКАНЕР ЗАПУЩЕН")
+    logger.info("🎯 СУПЕР-СКАНЕР 2-ГО ПЕРИОДА ЗАПУЩЕН")
     last_sent = {}
 
     while True:
         raw_data = await get_combined_data()
         if raw_data:
             found = parse(raw_data)
-            logger.info(f"🔎 Найдено подходящих игр (2-й пер/Перерыв): {len(found)}")
+            logger.info(f"🔎 Найдено подходящих игр: {len(found)}")
             
-            to_send = []
             for m in found:
                 m_id = m['id']
                 if m_id not in last_sent:
-                    to_send.append(m['text'])
+                    await bot.send_message(CHANNEL_ID, m['text'], parse_mode="Markdown")
                     last_sent[m_id] = m['text']
-            
-            if to_send:
-                for i in range(0, len(to_send), 5):
-                    chunk = to_send[i:i+5]
-                    msg = "🥅 **LIVE: ПЕРЕРЫВ / 2-Й ПЕРИОД**\n\n" + "\n\n".join(chunk)
-                    await bot.send_message(CHANNEL_ID, msg, parse_mode="Markdown")
-                logger.info(f"📣 Отправлено сообщений: {len(to_send)}")
+                    logger.info(f"✅ Отправлен матч: {m_id}")
         
         if len(last_sent) > 500: last_sent.clear()
-        await asyncio.sleep(60)
+        await asyncio.sleep(45) # Чуть быстрее опрашиваем
 
 if __name__ == "__main__":
     asyncio.run(main())
