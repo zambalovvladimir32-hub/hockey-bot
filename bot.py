@@ -38,7 +38,7 @@ async def get_data():
                 logger.error(f"Ошибка сети: {e}")
     return combined
 
-def parse_only_second(data):
+def parse_perfect_second(data):
     matches = []
     sections = data.split('~ZA÷')
     
@@ -50,60 +50,72 @@ def parse_only_second(data):
             try:
                 if 'AB÷' not in block: continue
                 
-                ab = block.split('AB÷')[1].split('¬')[0]
+                # Коды состояния
                 ac = block.split('AC÷')[1].split('¬')[0] if 'AC÷' in block else ""
                 cr = block.split('CR÷')[1].split('¬')[0] if 'CR÷' in block else ""
                 tt = block.split('TT÷')[1].split('¬')[0] if 'TT÷' in block else ""
+                
+                # --- ГЛАВНЫЙ ФИЛЬТР: ПРОВЕРКА СЧЕТА ---
+                # XA - счет 1-го периода. Если его нет, это 100% первый период.
+                # XB - счет 2-го периода. Если он уже есть, значит 2-й период кончился.
+                has_1st_period = 'XA÷' in block
+                has_2nd_period_ended = 'XB÷' in block
 
-                # 1. ТОЛЬКО LIVE (3 - основа, 2 - Азия/второстепенные)
-                if ab not in ['2', '3']: continue
-
-                # 2. ЖЕСТКИЙ БАН-ЛИСТ (1-й, 3-й, ОТ, перерыв перед 3-м)
-                # Если видим хоть один код из этих — матч мгновенно отбрасывается
-                if ac in ['1', '3', '46', '4', '5'] or cr in ['1', '3']: 
+                if not has_1st_period or has_2nd_period_ended:
                     continue
 
-                # 3. БЕЛЫЙ СПИСОК (Только 2-й период и перерыв 1-2)
-                is_break = (ac == '45') 
-                is_second = (ac in ['2', '15'] or cr == '2') 
+                # Дополнительная проверка: если в тексте времени есть "1", "P1" или "1-й" - в топку
+                time_text = tt.upper()
+                if any(x in time_text for x in ["1", "P1", "1-Й"]):
+                    continue
 
-                # Если матч прошел проверку на 2-й период:
-                if is_break or is_second:
+                # Условие прохода: Перерыв (45) или Код 2-го периода (2 или 15)
+                is_break = (ac == '45')
+                is_live_2nd = (ac in ['2', '15'] or cr == '2')
+
+                if is_break or is_live_2nd:
                     home = block.split('AE÷')[1].split('¬')[0]
                     away = block.split('AF÷')[1].split('¬')[0]
+                    
+                    # Берем ОБЩИЙ счет
                     s_h = block.split('AG÷')[1].split('¬')[0] if 'AG÷' in block else "0"
                     s_a = block.split('AH÷')[1].split('¬')[0] if 'AH÷' in block else "0"
+                    
+                    # Берем счет ТОЛЬКО 1-го периода для информативности
+                    score_1p = block.split('XA÷')[1].split('¬')[0]
                     
                     status_label = "☕️ ПЕРЕРЫВ (1-2)" if is_break else "⏱ 2-Й ПЕРИОД"
                     if tt and tt != "?": status_label += f" [{tt}]"
 
                     matches.append({
-                        'id': f"{home}{away}{s_h}{s_a}{is_break}", 
-                        'text': f"🏒 **{home} {s_h}:{s_a} {away}**\n🏆 {league}\n{status_label}"
+                        # Уникальный ID, чтобы не спамить один и тот же матч при каждом обновлении времени
+                        'id': f"{home}{away}{is_break}{ac}", 
+                        'text': f"🏒 **{home} {s_h}:{s_a} {away}**\n🏆 {league}\n{status_label}\n(1-й период: {score_1p})"
                     })
             except:
                 continue
     return matches
 
 async def main():
-    logger.info("🎯 ФИЛЬТР 'ТОЛЬКО 2-Й ПЕРИОД' ЗАПУЩЕН")
+    logger.info("🚀 ЗАПУСК БЕЗОШИБОЧНОГО СКАНЕРА (Контроль по периодам)")
     last_sent = set()
 
     while True:
         raw = await get_data()
         if raw:
-            found = parse_only_second(raw)
-            logger.info(f"🔎 Найдено во 2-м периоде (или перерыве): {len(found)}")
+            found = parse_perfect_second(raw)
+            logger.info(f"🔎 Найдено чистых матчей 2-го периода: {len(found)}")
             
             for m in found:
                 if m['id'] not in last_sent:
                     try:
                         await bot.send_message(CHANNEL_ID, m['text'], parse_mode="Markdown")
                         last_sent.add(m['id'])
-                        logger.info(f"✅ Отправлено: {m['text'][:30]}...")
-                    except: pass
+                    except Exception as e:
+                        logger.error(f"Ошибка ТГ: {e}")
         
-        if len(last_sent) > 500: last_sent.clear()
+        # Очистка старых ID раз в час (примерно)
+        if len(last_sent) > 1000: last_sent.clear()
         await asyncio.sleep(40)
 
 if __name__ == "__main__":
