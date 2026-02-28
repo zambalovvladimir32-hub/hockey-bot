@@ -37,41 +37,50 @@ class HockeyScanner:
             return ""
 
     def validate_match(self, block, league):
-        """Проверка на 2-й период и честный счет."""
+        """Проверка на реальный 2-й период через математику голов."""
         m_id = block.split('¬')[0]
         
-        ac_code = self._get_val(block, 'AC÷')     # Статус
-        timer = self._get_val(block, 'TT÷').upper() # Таймер
+        ac_code = self._get_val(block, 'AC÷')     # Системный статус
+        timer = self._get_val(block, 'TT÷').upper() # Таймер (P2, Pause и т.д.)
         
+        # Общий счет
         full_h = self._get_val(block, 'AG÷') or "0"
         full_a = self._get_val(block, 'AH÷') or "0"
         
+        # Счет по периодам
         s1 = self._get_val(block, 'XA÷') # 1-й период
         s2 = self._get_val(block, 'XB÷') # 2-й период
         s3 = self._get_val(block, 'XC÷') # 3-й период
 
-        # --- ЖЕСТКИЕ ФИЛЬТРЫ ---
-        # 1. Если есть намек на 3-й период — СКИП
+        # --- ЖЕСТКИЙ ФИЛЬТР (Защита от вранья Flashscore) ---
+        
+        # 1. Если есть счет за 3-й период (XC) или статус 3-го периода — сразу в бан.
         if s3 or ac_code in ['3', '46', '6'] or "P3" in timer:
             return None
 
-        # 2. Если 1-й период еще не доигран — СКИП
+        # 2. Если 1-й период еще не завершен (нет XA) — в бан.
         if not s1 or ac_code == '1' or "P1" in timer:
             return None
 
-        # 3. МАТЕМАТИЧЕСКАЯ ПРОВЕРКА (Защита от вранья Flashscore)
+        # 3. МАТЕМАТИЧЕСКАЯ ПРОВЕРКА (Ключевое решение)
         try:
+            # Парсим голы 1-го и 2-го периодов
             h1, a1 = map(int, s1.split(':'))
             h2, a2 = map(int, (s2 if s2 else "0:0").split(':'))
             
-            # Если (голы P1 + голы P2) != общему счету, значит Flashscore лагает 
-            # или уже идет 3-й период, но статус не обновился.
-            if (h1 + h2 != int(full_h)) or (a1 + a2 != int(full_a)):
+            # Считаем сумму голов, которые ДОЛЖНЫ быть при 2-м периоде
+            calc_h = h1 + h2
+            calc_a = a1 + a2
+            
+            # Сравниваем с общим счетом (full_h : full_a). 
+            # Если общий счет больше, чем сумма за 1+2 периоды — значит уже идет 3-й период!
+            if calc_h != int(full_h) or calc_a != int(full_a):
+                logger.info(f"🚫 Матч {m_id} отклонен: лаг статуса (Счет {full_h}:{full_a}, а 1+2 пер. = {calc_h}:{calc_a})")
                 return None
         except Exception:
             return None
 
-        # Определение перерыва
+        # Определение типа уведомления (Перерыв или Игра)
         is_break = (ac_code == '45' or "ПЕРЕРЫВ" in timer or "PAUSE" in timer)
         status_text = "☕️ ПЕРЕРЫВ (1-2)" if is_break else f"⏱ 2-Й ПЕРИОД [{timer}]"
         
@@ -86,16 +95,17 @@ class HockeyScanner:
                 f"🏆 {league}\n"
                 f"{status_text}\n\n"
                 f"📊 Счет по периодам:\n"
-                f"└ 1-й: `{s1}`\n"
-                f"└ 2-й: `{s2 if s2 else '0:0'}`"
+                f"└ 1-й период: `{s1}`\n"
+                f"└ 2-й период: `{s2 if s2 else '0:0'}`"
             )
         }
 
     async def run(self):
-        logger.info("=== HOCKEY SCANNER PRO v7.1 STARTED ===")
+        logger.info("=== HOCKEY SCANNER v7.5 (ANTI-LAG) STARTED ===")
         async with AsyncSession(impersonate="chrome110") as session:
             while True:
                 try:
+                    # Запрос с t=time.time() для обхода кэша Railway/Proxy
                     r = await session.get(f"{self.url}?t={int(time.time())}", headers=self.headers, timeout=20)
                     if r.status_code != 200:
                         await asyncio.sleep(5)
@@ -113,13 +123,14 @@ class HockeyScanner:
                                     try:
                                         await bot.send_message(CHANNEL_ID, match['text'], parse_mode="Markdown")
                                         self.sent_cache[m_id] = state
-                                        logger.info(f"✅ Отправлено: {m_id}")
+                                        logger.info(f"✅ Отправлено: {m_id} ({state})")
                                     except TelegramRetryAfter as e:
                                         await asyncio.sleep(e.retry_after)
                                     except Exception as e:
                                         logger.error(f"Ошибка TG: {e}")
 
-                    if len(self.sent_cache) > 500: self.sent_cache.clear()
+                    # Очистка старья
+                    if len(self.sent_cache) > 600: self.sent_cache.clear()
 
                 except Exception as e:
                     logger.error(f"Ошибка цикла: {e}")
