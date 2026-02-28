@@ -3,11 +3,34 @@ from aiogram import Bot
 from curl_cffi.requests import AsyncSession
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s', handlers=[logging.StreamHandler(sys.stdout)])
-logger = logging.getLogger("HockeyPro")
+logger = logging.getLogger("HockeyMaxLeagues")
 
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHANNEL_ID = os.getenv("CHANNEL_ID")
 bot = Bot(token=TOKEN)
+
+# --- МАКСИМАЛЬНО РАСШИРЕННЫЙ СПИСОК ЛИГ ---
+ALLOWED_LEAGUES = [
+    # Россия и СНГ
+    "КХЛ", "ВХЛ", "МХЛ", "НМХЛ", "БЕЛАРУСЬ", "КАЗАХСТАН",
+    # Северная Америка
+    "НХЛ", "NHL", "АХЛ", "AHL", "ECHL", "OHL", "WHL", "QMJHL", "NCAA",
+    # Финляндия
+    "ФИНЛЯНДИЯ: ЛИГА", "ФИНЛЯНДИЯ: МЕСТИС", "ФИНЛЯНДИЯ: СУОМИ-СЕРИЯ",
+    # Швеция
+    "ШВЕЦИЯ: ШВЕЦКАЯ ХОККЕЙНАЯ ЛИГА", "ШВЕЦИЯ: АЛЛСВЕНСКАН", "ШВЕЦИЯ: ДИВИЗИОН 1",
+    # Германия
+    "ГЕРМАНИЯ: ДЕЛ", "ГЕРМАНИЯ: ДЕЛ2", "ГЕРМАНИЯ: ОБЕРЛИГА",
+    # Чехия
+    "ЧЕХИЯ: ЭКСТРАЛИГА", "ЧЕХИЯ: ПЕРВАЯ ЛИГА", "ЧЕХИЯ: ВТОРАЯ ЛИГА",
+    # Швейцария
+    "ШВЕЙЦАРИЯ: НАЦИОНАЛЬНАЯ ЛИГА", "ШВЕЙЦАРИЯ: СВИСС ЛИГА",
+    # Остальная Европа
+    "АВСТРИЯ: ИСЕХОККЕЙ", "АВСТРИЯ: АЛЬПИЙСКАЯ", "НОРВЕГИЯ", "ДАНИЯ", 
+    "СЛОВАКИЯ", "ПОЛЬША", "ФРАНЦИЯ", "ВЕЛИКОБРИТАНИЯ", "ИТАЛИЯ", "ВЕНГРИЯ",
+    # Азия и Мир
+    "АЗИАТСКАЯ ЛИГА", "АЛЬПИЙСКАЯ ЛИГА", "ЧЕМПИОНОВ", "ЕВРОТУР"
+]
 
 class HockeyScanner:
     def __init__(self):
@@ -24,8 +47,13 @@ class HockeyScanner:
         try: return block.split(tag)[1].split('¬')[0].strip()
         except: return ""
 
+    def is_league_allowed(self, league_name):
+        ln = league_name.upper()
+        # Проверяем, есть ли хоть одно ключевое слово из списка в названии лиги
+        return any(allowed.upper() in ln for allowed in ALLOWED_LEAGUES)
+
     async def run(self):
-        logger.info("=== HOCKEY SCANNER v12.0 (FINAL) STARTED ===")
+        logger.info(f"=== v16.0 STARTED | Расширенный фильтр: {len(ALLOWED_LEAGUES)} направлений ===")
         async with AsyncSession(impersonate="chrome110") as session:
             while True:
                 try:
@@ -35,40 +63,55 @@ class HockeyScanner:
 
                     sections = r.text.split('~ZA÷')
                     for sec in sections[1:]:
-                        league = sec.split('¬')[0]
+                        league_raw = sec.split('¬')[0]
+                        
+                        # Фильтр по лигам
+                        if not self.is_league_allowed(league_raw):
+                            continue
+                            
                         matches = sec.split('~AA÷')
                         for m_block in matches[1:]:
                             m_id = m_block.split('¬')[0]
                             status = self._get_val(m_block, 'AC÷')
                             
-                            # ЛОГИКА: Теперь ловим и 45, и 46 (как на твоем скрине)
-                            if status in ['45', '46']:
+                            # Наш рабочий код перерыва 1-2
+                            if status == '46':
                                 h1 = self._get_val(m_block, 'BA÷')
                                 a1 = self._get_val(m_block, 'BB÷')
                                 
-                                # Запасной вариант забора счета
+                                # Запасной забор счета, если BA/BB еще пусты
                                 if h1 == "" or a1 == "":
                                     h1 = self._get_val(m_block, 'AG÷')
                                     a1 = self._get_val(m_block, 'AH÷')
 
                                 if h1 != "" and a1 != "":
-                                    score = (int(h1), int(a1))
-                                    if score in [(0, 0), (1, 0), (0, 1)]:
-                                        if m_id not in self.sent_cache:
-                                            home = self._get_val(m_block, 'AE÷')
-                                            away = self._get_val(m_block, 'AF÷')
-                                            link = f"https://www.flashscore.ru/match/{m_id}/#/match-summary"
-                                            
-                                            text = f"🏒 **{home} {h1}:{a1} {away}**\n🏆 {league}\n\n☕️ **ПЕРЕРЫВ 1-2**\n📊 Счет: `{h1}:{a1}`\n🔗 [ОТКРЫТЬ МАТЧ]({link})"
-                                            
-                                            await bot.send_message(CHANNEL_ID, text, parse_mode="Markdown", disable_web_page_preview=True)
-                                            self.sent_cache.add(m_id)
-                                            logger.info(f"✅ СИГНАЛ: {home}-{away}")
+                                    try:
+                                        score = (int(h1), int(a1))
+                                        # Условие: Гол во 2-м периоде (счет 0:0, 1:0, 0:1)
+                                        if score in [(0, 0), (1, 0), (0, 1)]:
+                                            if m_id not in self.sent_cache:
+                                                home = self._get_val(m_block, 'AE÷')
+                                                away = self._get_val(m_block, 'AF÷')
+                                                link = f"https://www.flashscore.ru/match/{m_id}/#/match-summary"
+                                                
+                                                text = (
+                                                    f"🧨 **ГОЛ ВО 2-М ПЕРИОДЕ? (Лига+)**\n\n"
+                                                    f"🏒 {home} **{h1}:{a1}** {away}\n"
+                                                    f"🏆 {league_raw}\n\n"
+                                                    f"📊 Счет после 1-го: `{h1}:{a1}`\n"
+                                                    f"🔗 [АНАЛИЗ МАТЧА]({link})"
+                                                )
+                                                
+                                                await bot.send_message(CHANNEL_ID, text, parse_mode="Markdown", disable_web_page_preview=True)
+                                                self.sent_cache.add(m_id)
+                                                logger.info(f"✅ СИГНАЛ: {league_raw} | {home}-{away}")
+                                    except ValueError:
+                                        continue
 
                     if len(self.sent_cache) > 1000: self.sent_cache.clear()
                 except Exception as e:
                     logger.error(f"Ошибка: {e}")
-                await asyncio.sleep(35)
+                await asyncio.sleep(30)
 
 if __name__ == "__main__":
     asyncio.run(HockeyScanner().run())
