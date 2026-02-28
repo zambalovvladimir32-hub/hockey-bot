@@ -19,90 +19,101 @@ URLS = [
     "https://www.flashscore.ru/x/feed/f_4_1_3_ru-ru_1"
 ]
 
-async def get_combined_data():
+async def get_data():
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         "x-fsign": "SW9D1eZo",
         "x-requested-with": "XMLHttpRequest",
         "Referer": "https://www.flashscore.ru/",
     }
-    all_raw = ""
+    combined = ""
     async with AsyncSession(impersonate="chrome110") as s:
         proxies = {"http": PROXY, "https": PROXY} if PROXY else None
         for url in URLS:
             try:
                 r = await s.get(f"{url}?t={int(asyncio.get_event_loop().time())}", headers=headers, proxies=proxies, timeout=15)
                 if r.status_code == 200:
-                    all_raw += r.text
+                    combined += r.text
             except Exception as e:
-                logger.error(f"⚠️ Ошибка запроса: {e}")
-    return all_raw
+                logger.error(f"Ошибка сети: {e}")
+    return combined
 
-def parse(data):
+def parse_smart(data):
     matches = []
-    sections = data.split('~ZA÷')
-    
-    for section in sections[1:]:
-        league_name = section.split('¬')[0]
-        blocks = section.split('~AA÷')
-        for block in blocks[1:]:
+    # Делим на лиги, потом на матчи
+    for section in data.split('~ZA÷')[1:]:
+        league = section.split('¬')[0]
+        for block in section.split('~AA÷')[1:]:
             try:
-                if 'AG÷' not in block: continue
+                # Базовые данные
+                if 'AE÷' not in block or 'AF÷' not in block: continue
                 
-                # 1. Проверяем JS статус (2 - период, 6 - перерыв)
+                home = block.split('AE÷')[1].split('¬')[0]
+                away = block.split('AF÷')[1].split('¬')[0]
+                
+                # Статус матча (AB) и Детальный статус (JS/TT)
+                status_main = block.split('AB÷')[1].split('¬')[0] if 'AB÷' in block else ""
                 js_status = block.split('JS÷')[1].split('¬')[0] if 'JS÷' in block else ""
+                time_info = block.split('TT÷')[1].split('¬')[0] if 'TT÷' in block else ""
                 
-                # 2. Проверяем поле времени (ТТ). Там часто пишут "2nd period" или "P2"
-                time_text = block.split('TT÷')[1].split('¬')[0] if 'TT÷' in block else ""
+                # ГЛАВНАЯ ЛОГИКА: ОПРЕДЕЛЕНИЕ ПЕРИОДА ПО БЛОКАМ СЧЕТА
+                # XA - счет 1-го периода, XB - счет 2-го, XC - 3-го
+                has_1st_score = 'XA÷' in block
+                has_2nd_score = 'XB÷' in block
+                has_3rd_score = 'XC÷' in block
                 
-                # 3. Проверяем наличие счета за 1-й и 2-й периоды
-                has_1st = 'XA÷' in block
-                has_2nd = 'XB÷' in block
+                # Нам нужен матч, если:
+                # 1. 1-й период уже точно БЫЛ (есть счет XA)
+                # 2. 2-й период либо идет, либо только закончился (НЕТ счета XB или он только появился)
+                # 3. Матч находится в LIVE статусе (AB=3)
+                
+                is_2nd_period = False
+                label = ""
 
-                # УСЛОВИЕ ЛОВУШКИ:
-                # - Если JS равен '2' ИЛИ в тексте времени есть '2'
-                # - ИЛИ если это перерыв ('6') и уже есть счет 1-го периода, но нет 2-го
-                is_second_period = (js_status == '2' or '2' in time_text)
-                is_break_after_1st = (js_status == '6' and has_1st and not has_2nd)
+                # Если есть счет 1-го, но нет счета 2-го -> это либо перерыв 1-2, либо сам 2-й период
+                if has_1st_score and not has_2nd_score and status_main == '3':
+                    is_2nd_period = True
+                    label = "⏱ 2-й ПЕРИОД / ПЕРЕРЫВ"
+                
+                # Резервный поиск по тексту (для Азиатской лиги)
+                if not is_2nd_period:
+                    if "2" in time_info or js_status == "2" or "П2" in time_info:
+                        is_2nd_period = True
+                        label = f"⏱ 2-й ПЕРИОД ({time_info})"
 
-                if is_second_period or is_break_after_1st:
-                    home = block.split('AE÷')[1].split('¬')[0]
-                    away = block.split('AF÷')[1].split('¬')[0]
-                    s_h = block.split('AG÷')[1].split('¬')[0]
-                    s_a = block.split('AH÷')[1].split('¬')[0]
+                if is_2nd_period:
+                    s_h = block.split('AG÷')[1].split('¬')[0] if 'AG÷' in block else "0"
+                    s_a = block.split('AH÷')[1].split('¬')[0] if 'AH÷' in block else "0"
                     
-                    # Формируем статус для сообщения
-                    status = "⏱ 2-й ПЕРИОД"
-                    if is_break_after_1st: status = "☕️ ПЕРЕРЫВ (после 1-го)"
-                    if time_text: status += f" ({time_text})"
-
                     matches.append({
-                        'text': f"🏒 **{home} {s_h}:{s_a} {away}**\n🏆 {league_name}\n{status}",
-                        'id': f"{home}{away}{s_h}{s_a}" 
+                        'id': f"{home}{away}{s_h}{s_a}{js_status}",
+                        'text': f"🏒 **{home} {s_h}:{s_a} {away}**\n🏆 {league}\n{label}"
                     })
             except:
                 continue
     return matches
 
 async def main():
-    logger.info("🎯 СУПЕР-СКАНЕР 2-ГО ПЕРИОДА ЗАПУЩЕН")
-    last_sent = {}
+    logger.info("🚀 ЗАПУСК УМНОГО СКАНЕРА (Детектор периодов по счетам)")
+    last_sent = set()
 
     while True:
-        raw_data = await get_combined_data()
-        if raw_data:
-            found = parse(raw_data)
-            logger.info(f"🔎 Найдено подходящих игр: {len(found)}")
+        raw = await get_data()
+        if raw:
+            found = parse_smart(raw)
+            logger.info(f"🔎 В эфире найдено подходящих: {len(found)}")
             
             for m in found:
-                m_id = m['id']
-                if m_id not in last_sent:
-                    await bot.send_message(CHANNEL_ID, m['text'], parse_mode="Markdown")
-                    last_sent[m_id] = m['text']
-                    logger.info(f"✅ Отправлен матч: {m_id}")
+                if m['id'] not in last_sent:
+                    try:
+                        await bot.send_message(CHANNEL_ID, m['text'], parse_mode="Markdown")
+                        last_sent.add(m['id'])
+                        logger.info(f"✅ Отправлено: {m['text'][:30]}...")
+                    except Exception as e:
+                        logger.error(f"Ошибка отправки: {e}")
         
         if len(last_sent) > 500: last_sent.clear()
-        await asyncio.sleep(45) # Чуть быстрее опрашиваем
+        await asyncio.sleep(40)
 
 if __name__ == "__main__":
     asyncio.run(main())
