@@ -31,15 +31,14 @@ async def get_data():
         proxies = {"http": PROXY, "https": PROXY} if PROXY else None
         for url in URLS:
             try:
-                ts = int(asyncio.get_event_loop().time())
-                r = await s.get(f"{url}?t={ts}", headers=headers, proxies=proxies, timeout=15)
+                r = await s.get(f"{url}?t={int(asyncio.get_event_loop().time())}", headers=headers, proxies=proxies, timeout=15)
                 if r.status_code == 200:
                     combined += r.text
             except Exception as e:
                 logger.error(f"Ошибка сети: {e}")
     return combined
 
-def parse_strict(data):
+def parse_only_second(data):
     matches = []
     sections = data.split('~ZA÷')
     
@@ -51,28 +50,25 @@ def parse_strict(data):
             try:
                 if 'AB÷' not in block: continue
                 
-                # 1. Извлекаем данные
-                ab = block.split('AB÷')[1].split('¬')[0] # Статус Live
-                ac = block.split('AC÷')[1].split('¬')[0] if 'AC÷' in block else "" # Код периода
-                tt = block.split('TT÷')[1].split('¬')[0] if 'TT÷' in block else "" # Время (текст)
-                has_1st_period_score = 'XA÷' in block # ЕСТЬ СЧЕТ 1-ГО ПЕРИОДА
-                has_2nd_period_score = 'XB÷' in block # ЕСТЬ СЧЕТ 2-ГО ПЕРИОДА (значит он уже кончился)
+                ab = block.split('AB÷')[1].split('¬')[0]
+                ac = block.split('AC÷')[1].split('¬')[0] if 'AC÷' in block else ""
+                cr = block.split('CR÷')[1].split('¬')[0] if 'CR÷' in block else ""
+                tt = block.split('TT÷')[1].split('¬')[0] if 'TT÷' in block else ""
 
-                # 2. ФИЛЬТР-ОТСЕКАТЕЛЬ:
-                # Нам НЕ нужны матчи, где:
-                # - Идет 1-й период (в тексте времени есть "1")
-                # - 2-й период уже завершен (есть блок XB)
-                if '1' in tt or 'P1' in tt.upper() or has_2nd_period_score:
+                # 1. ТОЛЬКО LIVE (3 - основа, 2 - Азия/второстепенные)
+                if ab not in ['2', '3']: continue
+
+                # 2. ЖЕСТКИЙ БАН-ЛИСТ (1-й, 3-й, ОТ, перерыв перед 3-м)
+                # Если видим хоть один код из этих — матч мгновенно отбрасывается
+                if ac in ['1', '3', '46', '4', '5'] or cr in ['1', '3']: 
                     continue
 
-                # 3. УСЛОВИЕ ЛОВЛИ (только перерыв 1-2 или сам 2-й период):
-                # Должен быть ОБЯЗАТЕЛЬНО счет за 1-й период (XA)
-                # И статус должен быть либо Перерыв (AC:45), либо 2-й период (AC:2 или текст "2")
-                
-                is_break = (ac == '45' or 'ПЕРЕРЫВ' in tt.upper())
-                is_second = (ac == '2' or '2' in tt or 'П2' in tt.upper())
+                # 3. БЕЛЫЙ СПИСОК (Только 2-й период и перерыв 1-2)
+                is_break = (ac == '45') 
+                is_second = (ac in ['2', '15'] or cr == '2') 
 
-                if has_1st_period_score and (is_break or is_second):
+                # Если матч прошел проверку на 2-й период:
+                if is_break or is_second:
                     home = block.split('AE÷')[1].split('¬')[0]
                     away = block.split('AF÷')[1].split('¬')[0]
                     s_h = block.split('AG÷')[1].split('¬')[0] if 'AG÷' in block else "0"
@@ -90,25 +86,25 @@ def parse_strict(data):
     return matches
 
 async def main():
-    logger.info("🎯 СТРОГИЙ СКАНЕР ЗАПУЩЕН (Только после 1-го периода)")
+    logger.info("🎯 ФИЛЬТР 'ТОЛЬКО 2-Й ПЕРИОД' ЗАПУЩЕН")
     last_sent = set()
 
     while True:
         raw = await get_data()
         if raw:
-            found = parse_strict(raw)
-            logger.info(f"🔎 Найдено подходящих игр: {len(found)}")
+            found = parse_only_second(raw)
+            logger.info(f"🔎 Найдено во 2-м периоде (или перерыве): {len(found)}")
             
             for m in found:
                 if m['id'] not in last_sent:
                     try:
                         await bot.send_message(CHANNEL_ID, m['text'], parse_mode="Markdown")
                         last_sent.add(m['id'])
-                    except Exception as e:
-                        logger.error(f"Ошибка ТГ: {e}")
+                        logger.info(f"✅ Отправлено: {m['text'][:30]}...")
+                    except: pass
         
         if len(last_sent) > 500: last_sent.clear()
-        await asyncio.sleep(45)
+        await asyncio.sleep(40)
 
 if __name__ == "__main__":
     asyncio.run(main())
