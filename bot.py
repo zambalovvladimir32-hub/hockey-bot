@@ -9,18 +9,11 @@ TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHANNEL_ID = os.getenv("CHANNEL_ID")
 bot = Bot(token=TOKEN)
 
-# --- ТОП ЛИГ С ВЫСОКИМ % ГОЛА ВО 2-М ПЕРИОДЕ ---
-# Оставляем только те, где ТБ 0.5 во втором периоде заходит чаще всего
 STAT_LEAGUES = [
-    "НХЛ", "NHL", "АХЛ", "AHL", "OHL", "WHL", "QMJHL", # Сев. Америка (самые сочные)
-    "ГЕРМАНИЯ: ДЕЛ", "ГЕРМАНИЯ: ДЕЛ2", "ГЕРМАНИЯ: ОБЕРЛИГА", # Немцы всегда забивают во 2-м
-    "АВСТРИЯ", "АЛЬПИЙСКАЯ", # Очень результативные лиги
-    "ЧЕХИЯ: ЭКСТРАЛИГА", "ЧЕХИЯ: ПЕРВАЯ ЛИГА",
-    "ФИНЛЯНДИЯ: МЕСТИС", # Вторая лига Финляндии забивнее первой
-    "ШВЕЙЦАРИЯ: НАЦИОНАЛЬНАЯ ЛИГА",
-    "НОРВЕГИЯ", "ДАНИЯ", # Скандинавский «верх»
-    "МХЛ", "НМХЛ", # Наша молодежка — лидеры по голам во 2-м периоде
-    "КХЛ" # Только из-за мастерства
+    "НХЛ", "NHL", "АХЛ", "AHL", "OHL", "WHL", "QMJHL",
+    "ГЕРМАНИЯ", "АВСТРИЯ", "АЛЬПИЙСКАЯ", 
+    "ЧЕХИЯ", "ФИНЛЯНДИЯ", "ШВЕЙЦАРИЯ",
+    "НОРВЕГИЯ", "ДАНИЯ", "МХЛ", "НМХЛ", "КХЛ", "ВХЛ"
 ]
 
 class HockeyScanner:
@@ -39,7 +32,7 @@ class HockeyScanner:
         except: return ""
 
     async def run(self):
-        logger.info(f"=== v20.0 СТАТ-АНАЛИЗ ЗАПУЩЕН | Лиг в базе: {len(STAT_LEAGUES)} ===")
+        logger.info(f"=== v20.1 СТАТ-АНАЛИЗ ЗАПУЩЕН | Лиг в базе: {len(STAT_LEAGUES)} ===")
         async with AsyncSession(impersonate="chrome110") as session:
             while True:
                 try:
@@ -48,16 +41,18 @@ class HockeyScanner:
                         await asyncio.sleep(20); continue
 
                     sections = r.text.split('~ZA÷')
+                    matches_checked = 0 # Счетчик для логов
+                    
                     for sec in sections[1:]:
                         league_raw = sec.split('¬')[0]
-                        # Проверка на вхождение в статистический топ
                         if not any(lg.upper() in league_raw.upper() for lg in STAT_LEAGUES):
                             continue
                             
                         matches = sec.split('~AA÷')
                         for m_block in matches[1:]:
+                            matches_checked += 1 # Считаем подходящие матчи
                             m_id = m_block.split('¬')[0]
-                            status = self._get_val(m_block, 'AC÷') # Код 46 (перерыв)
+                            status = self._get_val(m_block, 'AC÷') 
                             
                             if status == '46':
                                 h1 = self._get_val(m_block, 'BA÷')
@@ -67,22 +62,18 @@ class HockeyScanner:
 
                                 if h1 != "" and a1 != "":
                                     score = (int(h1), int(a1))
-                                    # Наш фильтр счета: 0:0, 1:0, 0:1
                                     if score in [(0, 0), (1, 0), (0, 1)]:
                                         
-                                        # Достаем броски (агрессия)
                                         s_h = self._get_val(m_block, 'AS÷') 
                                         s_a = self._get_val(m_block, 'AT÷')
                                         total_shots = (int(s_h) if s_h.isdigit() else 0) + (int(s_a) if s_a.isdigit() else 0)
 
-                                        # ФИЛЬТР: Минимум 11 бросков для забивных лиг
                                         if total_shots >= 11:
                                             if m_id not in self.sent_cache:
                                                 home = self._get_val(m_block, 'AE÷')
                                                 away = self._get_val(m_block, 'AF÷')
                                                 link = f"https://www.flashscore.ru/match/{m_id}/#/match-summary"
                                                 
-                                                # Логика анализа вероятности
                                                 if total_shots >= 17:
                                                     prob = "ВЫСОКАЯ (🔥)"
                                                     recom = "Вход на ТБ 0.5 до 30-й минуты!"
@@ -102,11 +93,15 @@ class HockeyScanner:
                                                 
                                                 await bot.send_message(CHANNEL_ID, text, parse_mode="Markdown", disable_web_page_preview=True)
                                                 self.sent_cache.add(m_id)
-                                                logger.info(f"✅ Аналитический сигнал: {home}-{away}")
+                                                logger.info(f"✅ СИГНАЛ В ТГ: {home}-{away} (Броски: {total_shots})")
 
+                    # ПУЛЬС БОТА: Выводим инфу, чтобы было видно, что он не завис
+                    logger.info(f"🔄 Цикл завершен. Игр нужных лиг в лайве: {matches_checked}. Ожидание 30 сек...")
+                    
                     if len(self.sent_cache) > 1000: self.sent_cache.clear()
                 except Exception as e:
-                    logger.error(f"Ошибка анализа: {e}")
+                    logger.error(f"Ошибка парсинга: {e}")
+                
                 await asyncio.sleep(30)
 
 if __name__ == "__main__":
