@@ -3,72 +3,69 @@ from aiogram import Bot
 from curl_cffi.requests import AsyncSession
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
-logger = logging.getLogger("LastStand_v39.0")
+logger = logging.getLogger("HockeyHybrid_v39.1")
 
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHANNEL_ID = os.getenv("CHANNEL_ID")
 PROXY_URL = os.getenv("PROXY_URL") 
 bot = Bot(token=TOKEN)
 
-# Список разных браузеров для маскировки
-UA_LIST = [
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
-]
-
 class HockeyLogic:
-    async def get_stats(self, session, m_id):
-        url = f"https://www.flashscore.ru/x/feed/d_st_{m_id}_ru-ru_1"
-        # Рандомный заголовок
-        headers = {
-            "x-fsign": "SW9D1eZo",
-            "Referer": "https://www.flashscore.ru/",
-            "User-Agent": random.choice(UA_LIST),
-            "x-requested-with": "XMLHttpRequest",
-        }
-        try:
-            # Увеличиваем время ожидания и меняем профиль браузера
-            r = await session.get(url, headers=headers, proxy=PROXY_URL, impersonate="chrome110", timeout=30)
-            if "¬" in r.text:
-                parts = r.text.split("¬")
-                stats = {"shots": 0, "pen": 0}
-                for i, p in enumerate(parts):
-                    if any(x in p for x in ["Броски", "SOG", "Удары"]):
-                        stats["shots"] = int(parts[i+1].split("÷")[1]) + int(parts[i+2].split("÷")[1])
-                    if any(x in p for x in ["ПИМ", "Штраф", "PM"]):
-                        stats["pen"] = int(parts[i+1].split("÷")[1]) + int(parts[i+2].split("÷")[1])
-                return stats
-            return f"BLOCK_{len(r.text)}"
-        except: return "ERROR"
+    def __init__(self):
+        self.ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
 
     async def run(self):
-        logger.info("📡 Попытка v39.0 с ротацией заголовков...")
+        logger.info("🧪 ЗАПУСК ГИБРИДНОЙ ПРОВЕРКИ (v39.1)")
+        
         async with AsyncSession() as session:
             while True:
                 try:
-                    # Очень долгая пауза между циклами, чтобы не злить фильтры
-                    await asyncio.sleep(random.randint(60, 90))
+                    # ШАГ 1: Заходим на главную (имитируем обычного юзера)
+                    logger.info("🏠 Захожу на главную для получения Cookies...")
+                    await session.get("https://www.flashscore.com/", headers={"User-Agent": self.ua}, proxy=PROXY_URL, impersonate="chrome110")
+                    await asyncio.sleep(3)
+
+                    # ШАГ 2: Список матчей
+                    r_list = await session.get(
+                        "https://www.flashscore.com/x/feed/f_4_0_3_en-gz_1", 
+                        headers={
+                            "User-Agent": self.ua,
+                            "x-fsign": "SW9D1eZo", # Проверь это значение в браузере!
+                            "x-requested-with": "XMLHttpRequest",
+                            "Referer": "https://www.flashscore.com/"
+                        },
+                        proxy=PROXY_URL,
+                        impersonate="chrome110"
+                    )
                     
-                    r = await session.get("https://www.flashscore.ru/x/feed/f_4_0_3_ru-ru_1", 
-                                         headers={"x-fsign": "SW9D1eZo", "User-Agent": random.choice(UA_LIST)},
-                                         proxy=PROXY_URL, impersonate="chrome110")
-                    
-                    matches = [m for m in r.text.split('~AA÷')[1:] if "AC÷46" in m and "BC÷" not in m]
-                    logger.info(f"🔎 В перерыве: {len(matches)}")
+                    matches = [m for m in r_list.text.split('~AA÷')[1:] if "AC÷46" in m]
+                    logger.info(f"🏟 Найдено в перерыве: {len(matches)}")
 
                     for m_block in matches:
                         m_id = m_block.split('¬')[0]
-                        # Рандомная задержка ПЕРЕД запросом каждого матча
-                        await asyncio.sleep(random.uniform(5, 12))
+                        await asyncio.sleep(random.uniform(2, 5))
                         
-                        res = await self.get_stats(session, m_id)
-                        logger.info(f"📊 Матч {m_id}: {res}")
-                        
-                        if isinstance(res, dict) and (res['shots'] >= 11 or res['pen'] >= 4):
-                            # (Тут код отправки сообщения как в прошлых версиях)
-                            pass
-                            
+                        # ШАГ 3: Запрос статы через .com домен
+                        url_stat = f"https://www.flashscore.com/x/feed/d_st_{m_id}_en-gz_1"
+                        r_stat = await session.get(
+                            url_stat, 
+                            headers={
+                                "User-Agent": self.ua,
+                                "x-fsign": "SW9D1eZo",
+                                "x-requested-with": "XMLHttpRequest",
+                                "Referer": f"https://www.flashscore.com/match/{m_id}/"
+                            },
+                            proxy=PROXY_URL,
+                            impersonate="chrome110"
+                        )
+
+                        if "¬" in r_stat.text:
+                            logger.info(f"✅ УСПЕХ! Матч {m_id} отдал данные!")
+                            # Здесь можно парсить данные ( shots = ... )
+                        else:
+                            logger.warning(f"❌ Блок {m_id}. Размер ответа: {len(r_stat.text)}")
+
+                    await asyncio.sleep(60)
                 except Exception as e:
                     logger.error(f"Ошибка: {e}")
                     await asyncio.sleep(30)
