@@ -3,7 +3,7 @@ from aiogram import Bot
 from curl_cffi.requests import AsyncSession
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s', handlers=[logging.StreamHandler(sys.stdout)])
-logger = logging.getLogger("HockeySniperV31.5")
+logger = logging.getLogger("HockeyTotalVision")
 
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHANNEL_ID = os.getenv("CHANNEL_ID")
@@ -26,70 +26,92 @@ class HockeySniper:
         try: return block.split(tag)[1].split('¬')[0].strip()
         except: return ""
 
-    async def get_stats(self, session, m_id, h_name, a_name):
-        """Пробиваем 404 ошибку через перебор вариантов"""
+    async def get_stats(self, session, m_id):
+        """Пробуем достать статику через разные эндпоинты, чтобы победить 404"""
         st = {"shots": 0, "pen": 0}
-        variants = ["_ru-ru_1", "_ru-ru_3", "_en-gb_1", "_ru-ru_0", "_ru-ru_2"]
+        # Новые варианты путей, которые сайт использует для динамических данных
+        endpoints = [f"d_st_{m_id}_ru-ru_1", f"d_su_{m_id}_ru-ru_1", f"d_st_{m_id}_en-gb_1"]
         
-        for v_suffix in variants:
-            url = f"https://www.flashscore.ru/x/feed/d_st_{m_id}{v_suffix}"
+        for ep in endpoints:
+            url = f"https://www.flashscore.ru/x/feed/{ep}"
             try:
-                r = await session.get(url, headers=self.headers, timeout=8)
+                r = await session.get(url, headers=self.headers, timeout=10)
                 if r.status_code == 200 and "¬" in r.text:
                     d = r.text
-                    # Ищем данные как на видео
+                    # Ищем Броски / Сэйвы
                     for tag in ["Удары по воротам", "Вратарь отбивает мяч", "Удары в створ", "SG÷"]:
                         if tag in d:
                             vals = [x.split("÷")[1] for x in d.split(tag)[1].split("~")[0].split("¬") if "÷" in x and x.split("÷")[1].isdigit()]
                             if len(vals) >= 2:
                                 st["shots"] = int(vals[0]) + int(vals[1])
                                 break
+                    # Ищем ПИМ
                     for tag in ["ПИМ", "Штрафное время", "Штрафы"]:
                         if tag in d:
                             vals = [x.split("÷")[1] for x in d.split(tag)[1].split("~")[0].split("¬") if "÷" in x and x.split("÷")[1].isdigit()]
                             if len(vals) >= 2:
                                 st["pen"] = int(vals[0]) + int(vals[1])
                                 break
-                    
-                    if st["shots"] > 0:
-                        logger.info(f"✅ УСПЕХ ({v_suffix}) для {h_name}: Броски={st['shots']}, ПИМ={st['pen']}")
-                        return st
+                    if st["shots"] > 0: return st
             except: continue
         return None
 
     async def run(self):
-        logger.info("=== v31.5 ULTRA-REPAIR ЗАПУЩЕН | Пробиваем 404 ===")
+        logger.info("=== v32.0 TOTAL VISION ЗАПУЩЕН | Время Чита ===")
         async with AsyncSession(impersonate="chrome110") as session:
             while True:
                 try:
                     r = await session.get(f"{self.url_main}?t={int(time.time())}", headers=self.headers, timeout=20)
-                    if r.status_code != 200: continue
+                    if r.status_code != 200:
+                        logger.error(f"❌ Ошибка доступа к ленте: {r.status_code}")
+                        await asyncio.sleep(20); continue
+                    
+                    matches = r.text.split('~AA÷')[1:]
+                    logger.info(f"📡 Сердцебиение: проверил ленту, вижу {len(matches)} матчей всего.")
+                    
                     for sec in r.text.split('~ZA÷')[1:]:
                         league = sec.split('¬')[0]
-                        if not any(lg.upper() in league.upper() for lg in LEAGUES): continue
+                        # Проверяем лигу
+                        is_target = any(lg.upper() in league.upper() for lg in LEAGUES)
+                        
                         for m_block in sec.split('~AA÷')[1:]:
                             m_id = m_block.split('¬')[0]
                             status = self._get_val(m_block, 'AC÷')
-                            gh, ga = self._get_val(m_block, 'AG÷'), self._get_val(m_block, 'AH÷')
-                            h_name, a_name = self._get_val(m_block, 'AE÷'), self._get_val(m_block, 'AF÷')
+                            
+                            # Логируем только если матч в перерыве (46)
+                            if status == '46':
+                                h, a = self._get_val(m_block, 'AE÷'), self._get_val(m_block, 'AF÷')
+                                logger.info(f"🎯 Найден ПЕРЕРЫВ: {h} - {a} (Лига: {league})")
+                                
+                                if not is_target:
+                                    logger.info(f"⏩ Пропуск (Лига не в списке)")
+                                    continue
 
-                            if status == '46' and m_id not in self.sent_cache:
-                                if self._get_val(m_block, 'BC÷') == "":
+                                gh, ga = self._get_val(m_block, 'AG÷'), self._get_val(m_block, 'AH÷')
+                                if m_id not in self.sent_cache and self._get_val(m_block, 'BC÷') == "":
                                     score = (int(gh) if gh.isdigit() else 0) + (int(ga) if ga.isdigit() else 0)
                                     if score <= 1:
-                                        stats = await self.get_stats(session, m_id, h_name, a_name)
+                                        stats = await self.get_stats(session, m_id)
                                         if stats:
                                             if stats["shots"] >= 11 or stats["pen"] >= 4:
                                                 label = "🔥 GOLD" if stats["shots"] >= 16 else "💎 СИГНАЛ"
                                                 text = (
-                                                    f"🏒 **{h_name} {gh}:{ga} {a_name}**\n🏆 {league}\n\n"
-                                                    f"📊 **1-й период:**\n🎯 Броски/Сэйвы: `{stats['shots']}`\n⚖️ ПИМ (Штрафы): `{stats['pen']} мин`"
+                                                    f"🏒 **{h} {gh}:{ga} {a}**\n🏆 {league}\n\n"
+                                                    f"📊 **Статистика (1-й период):**\n🎯 Броски/Сэйвы: `{stats['shots']}`\n⚖️ ПИМ (Штрафы): `{stats['pen']} мин`"
                                                     f"\n\nРейтинг: **{label}**\n🔗 [МАТЧ](https://www.flashscore.ru/match/{m_id}/#/match-summary)"
                                                 )
                                                 await bot.send_message(CHANNEL_ID, text, parse_mode="Markdown", disable_web_page_preview=True)
-                                                self.sent_cache[m_id] = f"{h_name} — {a_name}"
+                                                self.sent_cache[m_id] = f"{h} — {a}"
+                                                logger.info(f"🚀 СИГНАЛ ОТПРАВЛЕН: {h} - {a}")
+                                            else:
+                                                logger.info(f"📉 Стата слабая: {stats}")
+                                        else:
+                                            logger.warning(f"⚠️ Не смог достать статику для {m_id} (все еще 404?)")
+                    
                     await asyncio.sleep(40)
-                except Exception as e: logger.error(f"Ошибка цикла: {e}"); await asyncio.sleep(10)
+                except Exception as e: 
+                    logger.error(f"Критическая ошибка: {e}")
+                    await asyncio.sleep(10)
 
 if __name__ == "__main__":
     asyncio.run(HockeySniper().run())
