@@ -1,3 +1,2 @@
-playwright
 aiogram
 curl_cffi
