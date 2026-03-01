@@ -3,17 +3,18 @@ from aiogram import Bot
 from curl_cffi.requests import AsyncSession
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s', handlers=[logging.StreamHandler(sys.stdout)])
-logger = logging.getLogger("HockeyStatPro")
+logger = logging.getLogger("HockeyLivePro")
 
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHANNEL_ID = os.getenv("CHANNEL_ID")
 bot = Bot(token=TOKEN)
 
+# Расширенный список лиг (Добавлена Азия)
 STAT_LEAGUES = [
     "НХЛ", "NHL", "АХЛ", "AHL", "OHL", "WHL", "QMJHL",
-    "ГЕРМАНИЯ", "АВСТРИЯ", "АЛЬПИЙСКАЯ", 
-    "ЧЕХИЯ", "ФИНЛЯНДИЯ", "ШВЕЙЦАРИЯ",
-    "НОРВЕГИЯ", "ДАНИЯ", "МХЛ", "НМХЛ", "КХЛ", "ВХЛ"
+    "ГЕРМАНИЯ", "АВСТРИЯ", "АЛЬПИЙСКАЯ", "ЧЕХИЯ", "ФИНЛЯНДИЯ", 
+    "ШВЕЙЦАРИЯ", "НОРВЕГИЯ", "ДАНИЯ", "МХЛ", "НМХЛ", "КХЛ", "ВХЛ",
+    "АЗИЯ", "ASIA" 
 ]
 
 class HockeyScanner:
@@ -32,7 +33,7 @@ class HockeyScanner:
         except: return ""
 
     async def run(self):
-        logger.info(f"=== v20.1 СТАТ-АНАЛИЗ ЗАПУЩЕН | Лиг в базе: {len(STAT_LEAGUES)} ===")
+        logger.info(f"=== v22.0 LIVE-FOCUS ЗАПУЩЕН ===")
         async with AsyncSession(impersonate="chrome110") as session:
             while True:
                 try:
@@ -41,7 +42,7 @@ class HockeyScanner:
                         await asyncio.sleep(20); continue
 
                     sections = r.text.split('~ZA÷')
-                    matches_checked = 0 # Счетчик для логов
+                    actual_live_count = 0 
                     
                     for sec in sections[1:]:
                         league_raw = sec.split('¬')[0]
@@ -50,57 +51,55 @@ class HockeyScanner:
                             
                         matches = sec.split('~AA÷')
                         for m_block in matches[1:]:
-                            matches_checked += 1 # Считаем подходящие матчи
                             m_id = m_block.split('¬')[0]
                             status = self._get_val(m_block, 'AC÷') 
                             
+                            # Считаем только живые матчи (коды периодов и перерывов)
+                            if status in ['11', '12', '13', '46', '47']:
+                                actual_live_count += 1
+                            
+                            # Проверяем только перерыв 1-2
                             if status == '46':
-                                h1 = self._get_val(m_block, 'BA÷')
-                                a1 = self._get_val(m_block, 'BB÷')
-                                if h1 == "" or a1 == "":
-                                    h1, a1 = self._get_val(m_block, 'AG÷'), self._get_val(m_block, 'AH÷')
-
+                                h1 = self._get_val(m_block, 'BA÷') or self._get_val(m_block, 'AG÷')
+                                a1 = self._get_val(m_block, 'BB÷') or self._get_val(m_block, 'AH÷')
+                                
                                 if h1 != "" and a1 != "":
                                     score = (int(h1), int(a1))
+                                    home = self._get_val(m_block, 'AE÷')
+                                    away = self._get_val(m_block, 'AF÷')
+
+                                    # Условие по счету
                                     if score in [(0, 0), (1, 0), (0, 1)]:
-                                        
                                         s_h = self._get_val(m_block, 'AS÷') 
                                         s_a = self._get_val(m_block, 'AT÷')
                                         total_shots = (int(s_h) if s_h.isdigit() else 0) + (int(s_a) if s_a.isdigit() else 0)
 
+                                        # Условие по броскам
                                         if total_shots >= 11:
                                             if m_id not in self.sent_cache:
-                                                home = self._get_val(m_block, 'AE÷')
-                                                away = self._get_val(m_block, 'AF÷')
                                                 link = f"https://www.flashscore.ru/match/{m_id}/#/match-summary"
-                                                
-                                                if total_shots >= 17:
-                                                    prob = "ВЫСОКАЯ (🔥)"
-                                                    recom = "Вход на ТБ 0.5 до 30-й минуты!"
-                                                else:
-                                                    prob = "СРЕДНЯЯ (📈)"
-                                                    recom = "Ловим кэф 1.65+ на ТБ 0.5 во 2-м"
-
                                                 text = (
                                                     f"🎯 **АНАЛИЗ: ГОЛ ВО 2-М ПЕРИОДЕ**\n\n"
                                                     f"🏒 {home} **{h1}:{a1}** {away}\n"
                                                     f"🏆 {league_raw}\n\n"
                                                     f"📊 Броски в 1-м: `{total_shots}`\n"
-                                                    f"📊 Вероятность: {prob}\n"
-                                                    f"💡 План: {recom}\n\n"
                                                     f"🔗 [ОТКРЫТЬ МАТЧ]({link})"
                                                 )
-                                                
                                                 await bot.send_message(CHANNEL_ID, text, parse_mode="Markdown", disable_web_page_preview=True)
                                                 self.sent_cache.add(m_id)
-                                                logger.info(f"✅ СИГНАЛ В ТГ: {home}-{away} (Броски: {total_shots})")
+                                                logger.info(f"✅ СИГНАЛ: {home}-{away}")
+                                        else:
+                                            # Лог для понимания, почему матч пропущен
+                                            if m_id not in self.sent_cache:
+                                                logger.info(f"⏩ Пропуск {home}-{away}: мало бросков ({total_shots})")
+                                    else:
+                                        if m_id not in self.sent_cache:
+                                            logger.info(f"⏩ Пропуск {home}-{away}: неподходящий счет {h1}:{a1}")
 
-                    # ПУЛЬС БОТА: Выводим инфу, чтобы было видно, что он не завис
-                    logger.info(f"🔄 Цикл завершен. Игр нужных лиг в лайве: {matches_checked}. Ожидание 30 сек...")
-                    
+                    logger.info(f"🔄 В лайве {actual_live_count} игр подходящих лиг. Ждем перерывов...")
                     if len(self.sent_cache) > 1000: self.sent_cache.clear()
                 except Exception as e:
-                    logger.error(f"Ошибка парсинга: {e}")
+                    logger.error(f"Ошибка: {e}")
                 
                 await asyncio.sleep(30)
 
