@@ -2,60 +2,51 @@ import asyncio, os, logging, sys, time, datetime
 from aiogram import Bot
 from curl_cffi.requests import AsyncSession
 
-# Настройка логов, чтобы ты видел всё в Railway
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s', handlers=[logging.StreamHandler(sys.stdout)])
-logger = logging.getLogger("HockeyGodEye")
+logger = logging.getLogger("HockeyMhlStrike")
 
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHANNEL_ID = os.getenv("CHANNEL_ID")
 bot = Bot(token=TOKEN)
 
-# Лиги для мониторинга
-STAT_LEAGUES = ["НХЛ", "NHL", "АХЛ", "AHL", "КХЛ", "ВХЛ", "МХЛ", "АЗИЯ", "ASIA", "ЧЕХИЯ", "ФИНЛЯНДИЯ", "ГЕРМАНИЯ", "ШВЕЙЦАРИЯ", "АВСТРИЯ"]
+STAT_LEAGUES = ["НХЛ", "NHL", "АХЛ", "AHL", "КХЛ", "ВХЛ", "МХЛ", "АЗИЯ", "ASIA", "ЧЕХИЯ", "ФИНЛЯНДИЯ", "ГЕРМАНИЯ", "ШВЕЙЦАРИЯ"]
 
 class HockeyScanner:
     def __init__(self):
         self.url_main = "https://www.flashscore.ru/x/feed/f_4_0_3_ru-ru_1"
-        self.headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-            "x-fsign": "SW9D1eZo",
-            "x-requested-with": "XMLHttpRequest",
-            "Referer": "https://www.flashscore.ru/"
-        }
-        self.sent_cache = {} # m_id: (home, away)
+        self.headers = {"User-Agent": "Mozilla/5.0", "x-fsign": "SW9D1eZo", "x-requested-with": "XMLHttpRequest"}
+        self.sent_cache = {} 
         self.stats = {"win": 0, "loss": 0}
 
     def _get_val(self, block, tag):
         try: return block.split(tag)[1].split('¬')[0].strip()
         except: return ""
 
-    async def get_deep_shots(self, session, m_id):
-        """Продвинутый парсинг бросков по скрытым тегам"""
+    async def get_stats(self, session, m_id):
+        """Пытаемся достать хоть какую-то статистику (Броски или Опасные атаки)"""
         try:
             detail_url = f"https://www.flashscore.ru/x/feed/d_st_{m_id}_ru-ru_1"
-            res = await session.get(detail_url, headers=self.headers, timeout=12)
+            res = await session.get(detail_url, headers=self.headers, timeout=10)
             data = res.text
             
-            # 1. Попытка найти по тегам SG (Home) и SH (Away) - самые стабильные
-            if "SG÷" in data and "SH÷" in data:
-                h_s = self._get_val(data, "SG÷")
-                a_s = self._get_val(data, "SH÷")
-                if h_s.isdigit() and a_s.isdigit():
-                    return int(h_s), int(a_s)
+            # 1. Ищем броски в створ (SG/SH)
+            if "SG÷" in data:
+                h = self._get_val(data, "SG÷")
+                a = self._get_val(data, "SH÷")
+                if h.isdigit(): return "Броски", int(h), int(a)
             
-            # 2. Попытка найти в текстовых блоках (если первый способ не сработал)
-            for term in ["Броски в створ", "Shots on Goal"]:
-                if term in data:
-                    block = data.split(term)[1].split("~")[0]
-                    vals = [v.split("÷")[1] for v in block.split("¬") if "÷" in v]
-                    if len(vals) >= 2:
-                        return int(vals[0]), int(vals[1])
-        except Exception as e:
-            logger.error(f"Ошибка парсинга бросков для {m_id}: {e}")
-        return 0, 0
+            # 2. Если бросков нет, ищем Опасные атаки (DA/DB или аналоги)
+            if "Опасные атаки" in data or "Dangerous Attacks" in data:
+                # В API Flashscore они часто идут после заголовка Опасные атаки
+                parts = data.split("Опасные атаки")[1].split("~")[0]
+                vals = [v.split("÷")[1] for v in parts.split("¬") if "÷" in v and v.split("÷")[1].isdigit()]
+                if len(vals) >= 2:
+                    return "Оп. атаки", int(vals[0]), int(vals[1])
+        except: pass
+        return "Нет данных", 0, 0
 
     async def run(self):
-        logger.info("=== v28.2 GOD-EYE ЗАПУЩЕН | Чита 17:20 | Броски починены ===")
+        logger.info("=== v28.4 MHL-STRIKE ЗАПУЩЕН | Чита 17:25 ===")
         async with AsyncSession(impersonate="chrome110") as session:
             while True:
                 try:
@@ -65,6 +56,7 @@ class HockeyScanner:
                     sections = r.text.split('~ZA÷')
                     for sec in sections[1:]:
                         league_raw = sec.split('¬')[0]
+                        is_mhl = "МХЛ" in league_raw.upper()
                         if not any(lg.upper() in league_raw.upper() for lg in STAT_LEAGUES): continue
                             
                         matches = sec.split('~AA÷')
@@ -74,49 +66,62 @@ class HockeyScanner:
                             home, away = self._get_val(m_block, 'AE÷'), self._get_val(m_block, 'AF÷')
                             gh, ga = self._get_val(m_block, 'AG÷'), self._get_val(m_block, 'AH÷')
 
-                            # 1. ПРОВЕРКА ЗАНОСОВ
+                            # КОНТРОЛЬ ЗАНОСОВ
                             if m_id in self.sent_cache:
                                 h2, a2 = self._get_val(m_block, 'BC÷'), self._get_val(m_block, 'BD÷')
                                 if (h2.isdigit() and int(h2) > 0) or (a2.isdigit() and int(a2) > 0):
-                                    await bot.send_message(CHANNEL_ID, f"✅ **ЗАНОС!**\n🏒 {home} — {away}\nГол во 2-м периоде!")
+                                    await bot.send_message(CHANNEL_ID, f"✅ **ЗАНОС!**\n🏒 {home} — {away}\nГол во втором!")
                                     self.stats["win"] += 1
                                     del self.sent_cache[m_id]
                                     continue
-                                if status in ['13', '45']: # Конец 2-го периода
+                                if status in ['13', '45']:
                                     if h2 == "0" and a2 == "0":
                                         await bot.send_message(CHANNEL_ID, f"❌ **МИНУС**\n🏒 {home} — {away}\n2-й период без голов.")
                                         self.stats["loss"] += 1
                                     del self.sent_cache[m_id]
                                     continue
 
-                            # 2. ПОИСК СИГНАЛОВ (АЛГОРИТМ APEX)
+                            # НОВЫЙ АЛГОРИТМ С ПОДДЕРЖКОЙ МХЛ
                             if status == '46' and m_id not in self.sent_cache:
                                 if self._get_val(m_block, 'BC÷') == "":
                                     score_sum = (int(gh) if gh.isdigit() else 0) + (int(ga) if ga.isdigit() else 0)
                                     if score_sum <= 1:
-                                        # Глубокий парсинг бросков
-                                        h_s, a_s = await self.get_deep_shots(session, m_id)
-                                        total_s = h_s + a_s
+                                        st_type, h_v, a_v = await self.get_stats(session, m_id)
+                                        total_v = h_v + a_v
                                         
-                                        if total_s >= 12: # Наш порог активности
-                                            conf = "⭐️ УВЕРЕННЫЙ" if total_s >= 20 or abs(h_s - a_s) >= 8 else "Обычный"
+                                        # ЛОГИКА ОТПРАВКИ:
+                                        # 1. Если есть стата и она ок
+                                        # 2. ИЛИ если это МХЛ (шлем даже без статы, т.к. там ее часто нет)
+                                        should_send = False
+                                        conf = "Обычный"
+                                        
+                                        if st_type == "Броски" and total_v >= 12:
+                                            should_send = True
+                                            if total_v >= 19: conf = "⭐️ УВЕРЕННЫЙ"
+                                        elif st_type == "Оп. атаки" and total_v >= 35:
+                                            should_send = True
+                                            conf = "⚡️ ПО АТАКАМ"
+                                        elif is_mhl: # Для МХЛ делаем исключение
+                                            should_send = True
+                                            conf = "🐣 МХЛ (БЕЗ СТАТЫ)"
+                                            st_type, h_v, a_v = "Данные", "?", "?"
+
+                                        if should_send:
                                             link = f"https://www.flashscore.ru/match/{m_id}/#/match-summary"
                                             text = (
                                                 f"🏒 **{home} {gh}:{ga} {away}**\n"
                                                 f"🏆 {league_raw}\n\n"
-                                                f"📊 Броски (1-й): `{h_s}:{a_s}`\n"
-                                                f"💎 Алгоритм: **{conf}**\n\n"
+                                                f"📊 {st_type}: `{h_v}:{a_v}`\n"
+                                                f"💎 Алгоритм: **{conf}**\n"
+                                                f"🎯 Ждем гол во 2-м!\n\n"
                                                 f"🔗 [ОТКРЫТЬ МАТЧ]({link})"
                                             )
                                             await bot.send_message(CHANNEL_ID, text, parse_mode="Markdown", disable_web_page_preview=True)
                                             self.sent_cache[m_id] = True
-                                            logger.info(f"✅ Сигнал отправлен: {home}-{away} ({h_s}:{a_s})")
-                                        else:
-                                            logger.info(f"⏳ Пропуск {home}: мало бросков ({total_s})")
 
                     if len(self.sent_cache) > 200: self.sent_cache.clear()
-                except Exception as e: logger.error(f"Критическая ошибка: {e}")
-                await asyncio.sleep(45)
+                except Exception as e: logger.error(f"Error: {e}")
+                await asyncio.sleep(40)
 
 if __name__ == "__main__":
     asyncio.run(HockeyScanner().run())
