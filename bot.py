@@ -1,9 +1,9 @@
-import asyncio, os, logging
+import asyncio, os, logging, random
 from aiogram import Bot
 from curl_cffi.requests import AsyncSession
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
-logger = logging.getLogger("HockeyDataCheck_v38.8")
+logger = logging.getLogger("HockeyHardStealth_v38.9")
 
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHANNEL_ID = os.getenv("CHANNEL_ID")
@@ -12,76 +12,89 @@ bot = Bot(token=TOKEN)
 
 class HockeyLogic:
     def __init__(self):
+        # Максимально «человеческие» заголовки
         self.headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+            "accept": "*/*",
+            "accept-language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7",
+            "sec-ch-ua": '"Not(A:Bar";v="99", "Google Chrome";v="122", "Chromium";v="122"',
+            "sec-ch-ua-mobile": "?0",
+            "sec-ch-ua-platform": '"Windows"',
+            "sec-fetch-dest": "empty",
+            "sec-fetch-mode": "cors",
+            "sec-fetch-site": "same-origin",
             "x-fsign": "SW9D1eZo",
-            "Referer": "https://www.flashscore.ru/",
             "x-requested-with": "XMLHttpRequest",
+            "Referer": "https://www.flashscore.ru/",
         }
 
     async def get_stats(self, session, m_id):
         url = f"https://www.flashscore.ru/x/feed/d_st_{m_id}_ru-ru_1"
         try:
-            r = await session.get(url, headers=self.headers, proxy=PROXY_URL, impersonate="chrome120", timeout=20)
+            # Используем impersonate="chrome110" и чистим куки перед каждым важным запросом
+            r = await session.get(
+                url, 
+                headers=self.headers, 
+                proxy=PROXY_URL, 
+                impersonate="chrome110", 
+                timeout=25
+            )
             data = r.text
             
             if "¬" not in data:
-                return f"Данные отсутствуют (размер: {len(data)})"
+                return f"БЛОК (len={len(data)})"
 
             parts = data.split("¬")
             stats = {"shots": 0, "pen": 0}
-            found_any = False
-            
             for i, p in enumerate(parts):
-                # Проверяем все варианты названий бросков
-                if any(x in p for x in ["Броски", "SOG", "Удары в створ"]):
-                    try:
-                        stats["shots"] = int(parts[i+1].split("÷")[1]) + int(parts[i+2].split("÷")[1])
-                        found_any = True
-                    except: pass
-                # Проверяем все варианты названий штрафа
-                if any(x in p for x in ["ПИМ", "Штраф", "PM", "Штрафное время"]):
-                    try:
-                        stats["pen"] = int(parts[i+1].split("÷")[1]) + int(parts[i+2].split("÷")[1])
-                        found_any = True
-                    except: pass
-            
-            if found_any:
-                return stats
-            return "Вкладка статистики пуста (технический перерыв или лига без статы)"
+                if any(x in p for x in ["Броски", "SOG", "Удары"]):
+                    stats["shots"] = int(parts[i+1].split("÷")[1]) + int(parts[i+2].split("÷")[1])
+                if any(x in p for x in ["ПИМ", "Штраф", "PM"]):
+                    stats["pen"] = int(parts[i+1].split("÷")[1]) + int(parts[i+2].split("÷")[1])
+            return stats
         except Exception as e:
-            return f"Ошибка запроса: {e}"
+            return f"Ошибка: {e}"
 
     async def run(self):
-        logger.info("🧪 v38.8: ТЕСТОВЫЙ ЗАПУСК. ПРОВЕРЯЕМ ВСЕ МАТЧИ В ПЕРЕРЫВЕ.")
+        logger.info("🛡 Запуск v38.9: Глубокая маскировка")
         async with AsyncSession() as session:
             while True:
                 try:
-                    r = await session.get("https://www.flashscore.ru/x/feed/f_4_0_3_ru-ru_1", headers=self.headers, proxy=PROXY_URL, impersonate="chrome120")
-                    # Берем ВСЕ матчи в перерыве (AC÷46) без фильтра по счету
-                    matches = [m for m in r.text.split('~AA÷')[1:] if "AC÷46" in m]
+                    # Случайная пауза перед циклом (чтобы не было тайминга ровно в 45 сек)
+                    await asyncio.sleep(random.randint(5, 15))
                     
-                    logger.info(f"🏟 Найдено {len(matches)} игр в перерыве. Начинаю опрос статы...")
+                    r = await session.get(
+                        "https://www.flashscore.ru/x/feed/f_4_0_3_ru-ru_1", 
+                        headers=self.headers, 
+                        proxy=PROXY_URL, 
+                        impersonate="chrome110"
+                    )
+                    
+                    matches = [m for m in r.text.split('~AA÷')[1:] if "AC÷46" in m]
+                    logger.info(f"🏟 Найдено в перерыве: {len(matches)}")
 
                     for m_block in matches:
                         m_id = m_block.split('¬')[0]
                         h_team = m_block.split('AE÷')[1].split('¬')[0]
                         a_team = m_block.split('AF÷')[1].split('¬')[0]
                         
-                        logger.info(f"📡 Запрашиваю данные: {h_team} vs {a_team}")
-                        res = await self.get_stats(session, m_id)
+                        # Небольшая пауза между запросами статы (имитация чтения)
+                        await asyncio.sleep(random.uniform(1.5, 4.0))
                         
-                        if isinstance(res, dict):
-                            logger.info(f"✅ СТАТИСТИКА: Броски: {res['shots']}, Штраф: {res['pen']}")
-                            # Для теста отправим в канал вообще всё, что нашли
-                            await bot.send_message(CHANNEL_ID, f"🧪 Тест статы: {h_team} - {a_team}\n🎯 Броски: {res['shots']}\n⚖️ Штраф: {res['pen']}")
-                        else:
-                            logger.info(f"⚪️ Результат: {res}")
-                            
-                        await asyncio.sleep(2) # Пауза между запросами матчей
+                        res = await self.get_stats(session, m_id)
+                        logger.info(f"📊 {h_team} vs {a_team}: {res}")
+                        
+                        if isinstance(res, dict) and (res['shots'] >= 11 or res['pen'] >= 4):
+                            # Проверяем счет (суммарно <= 1)
+                            try:
+                                h_score = int(m_block.split('AG÷')[1].split('¬')[0])
+                                a_score = int(m_block.split('AH÷')[1].split('¬')[0])
+                                if (h_score + a_score) <= 1:
+                                    msg = (f"🏒 **{h_team} {h_score}:{a_score} {a_team}**\n"
+                                           f"🎯 Броски: `{res['shots']}` | ⚖️ Штраф: `{res['pen']} мин`")
+                                    await bot.send_message(CHANNEL_ID, msg, parse_mode="Markdown")
+                            except: pass
 
-                    logger.info("⌛️ Цикл окончен. Сплю 60 сек...")
-                    await asyncio.sleep(60)
+                    await asyncio.sleep(45)
                 except Exception as e:
                     logger.error(f"Ошибка: {e}")
                     await asyncio.sleep(20)
