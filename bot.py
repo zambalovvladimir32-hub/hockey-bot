@@ -1,59 +1,73 @@
 import asyncio, re, os, sys
-import aiohttp
+from curl_cffi.requests import AsyncSession
 
 def log(msg):
     print(msg, flush=True)
 
-# Этот ключ нужно будет менять раз в пару дней, если полетят нули
-# Сейчас попробуем пробить через мобильный API
-FSIGN = "SW9D1eZo" 
+# ТВОЙ РАБОЧИЙ КЛЮЧ
+WORKING_FSIGN = "SW9D1eZo"
 
-async def get_stats(session, mid):
+async def get_stats_hard(session, mid):
     try:
-        # Тянем через мобильную версию, она менее защищена
-        url = f"https://m.flashscore.ru/x/feed/df_st_0_{mid}"
+        # 1. Сначала ОБЯЗАТЕЛЬНО заходим на страницу матча (имитируем клик человека)
+        match_url = f"https://www.flashscore.ru/match/{mid}/#/match-summary/match-statistics/0"
+        await session.get(match_url, impersonate="chrome120", timeout=10)
+        
+        # 2. Теперь стучимся в фид статистики с тем самым ключом
+        # df_st_0 - общая стата, df_st_1 - первый период
+        stats_url = f"https://www.flashscore.ru/x/feed/df_st_0_{mid}"
+        
         headers = {
-            "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 14_0 like Mac OS X) AppleWebKit/605.1.15",
-            "x-fsign": FSIGN,
-            "x-requested-with": "XMLHttpRequest",
-            "Referer": f"https://m.flashscore.ru/match/{mid}/"
+            "x-fsign": WORKING_FSIGN,
+            "referer": match_url,
+            "x-requested-with": "XMLHttpRequest"
         }
-        async with session.get(url, headers=headers, timeout=10) as r:
-            text = await r.text()
-            if "158" not in text: return 0, 0
-            
-            sh, pn = 0, 0
-            for part in text.split('~'):
-                if '158' in part:
-                    nums = re.findall(r'(\d+)', part)
+        
+        r = await session.get(stats_url, headers=headers, impersonate="chrome120", timeout=10)
+        raw_data = r.text
+        
+        # ПРОВЕРКА: Если в ответе есть код 158 (броски) или 2 (штраф)
+        sh, pn = 0, 0
+        if "158" in raw_data or "AS÷" in raw_data:
+            for s in raw_data.split('~'):
+                if '158' in s:
+                    nums = re.findall(r'(\d+)', s)
                     if len(nums) >= 2: sh = int(nums[-2]) + int(nums[-1])
-                if '2' in part and 'PN' in part:
-                    nums = re.findall(r'(\d+)', part)
+                if '2' in s and 'PN' in s:
+                    nums = re.findall(r'(\d+)', s)
                     if len(nums) >= 2: pn = int(nums[-2]) + int(nums[-1])
-            return sh, pn
-    except: return 0, 0
+            return sh, pn, "OK"
+        
+        return 0, 0, "EMPTY_RESPONSE"
+    except Exception as e:
+        return 0, 0, f"ERROR: {e}"
 
 async def main():
-    log("--- ⚡️ v128.0: ОПТИМИЗИРОВАННЫЙ АНТИ-ЛОМ ---")
-    async with aiohttp.ClientSession() as session:
+    log(f"--- 🏒 v129.0: ТЕСТ С КЛЮЧОМ {WORKING_FSIGN} ---")
+    async with AsyncSession() as session:
+        # Заходим на главную один раз для общих куки
+        await session.get("https://www.flashscore.ru/", impersonate="chrome120")
+        
         while True:
             try:
-                # Берем список матчей
-                async with session.get(f"https://www.flashscore.ru/x/feed/f_4_0_3_ru-ru_1", headers={"x-fsign": FSIGN}) as r:
-                    data = await r.text()
+                # Получаем список матчей
+                r = await session.get(f"https://www.flashscore.ru/x/feed/f_4_0_3_ru-ru_1", 
+                                      headers={"x-fsign": WORKING_FSIGN}, impersonate="chrome120")
                 
-                mids = re.findall(r'AA÷(.*?)(?=¬)', data)[:10]
-                log(f"🔎 Вижу {len(mids)} матчей. Погнали...")
+                mids = re.findall(r'AA÷(.*?)(?=¬)', r.text)[:8] # Берем 8 матчей
+                log(f"🔎 Вижу {len(mids)} матчей в лайве. Вытаскиваю стату...")
 
                 for mid in mids:
-                    sh, pn = await get_stats(session, mid)
-                    if sh > 0 or pn > 0:
-                        log(f"🏒 МАТЧ {mid} | БРОСКИ: {sh} | ШТРАФ: {pn} ✅")
+                    sh, pn, status = await get_stats_hard(session, mid)
+                    if status == "OK" and (sh > 0 or pn > 0):
+                        log(f"✅ ВЫТАЩИЛ! Матч {mid} | Броски: {sh} | Штраф: {pn}")
                     else:
-                        log(f"🥚 МАТЧ {mid} | Пусто")
+                        log(f"🥚 Матч {mid} | Статус: {status} | Броски: {sh}")
 
-            except Exception as e: log(f"🛑 Сбой: {e}")
-            await asyncio.sleep(40)
+            except Exception as e:
+                log(f"🛑 Ошибка цикла: {e}")
+            
+            await asyncio.sleep(45)
 
 if __name__ == "__main__":
     asyncio.run(main())
