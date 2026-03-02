@@ -1,61 +1,89 @@
-import asyncio, re, os
-from curl_cffi.requests import AsyncSession
+import asyncio
+import aiohttp
 
 def log(msg):
     print(msg, flush=True)
 
-async def get_stats_stealth(session, mid):
+# Наш список лиг (SofaScore пишет их по-английски или по-русски)
+WHITE_LIST = ['NHL', 'KHL', 'НХЛ', 'КХЛ', 'AHL', 'Extraliga', 'SHL', 'Liiga']
+
+async def get_sofascore_stats(session, event_id):
+    """Тянем броски и штрафы из открытого API SofaScore"""
+    url = f"https://api.sofascore.com/api/v1/event/{event_id}/statistics"
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/122.0.0.0",
+        "Origin": "https://www.sofascore.com",
+        "Referer": "https://www.sofascore.com/"
+    }
     try:
-        # Пытаемся забрать через "универсальный" технический фид (df_ut)
-        # Он часто содержит и инциденты, и статку, и его сложнее заблочить
-        url = f"https://www.flashscore.ru/x/feed/df_ut_1_{mid}"
-        headers = {
-            "x-fsign": "SW9D1eZo",
-            "referer": "https://www.flashscore.ru/",
-            "x-requested-with": "XMLHttpRequest"
-        }
-        
-        r = await session.get(url, headers=headers, impersonate="chrome120", timeout=10)
-        content = r.text
-        
-        sh, pn = 0, 0
-        # Код 158 - броски в створ, 2 - штрафное время
-        if "158" in content:
-            parts = content.split('~')
-            for p in parts:
-                if '158' in p:
-                    v = re.findall(r'(\d+)', p)
-                    if len(v) >= 2: sh = int(v[-2]) + int(v[-1])
-                if '2' in p and 'PN' in p:
-                    v = re.findall(r'(\d+)', p)
-                    if len(v) >= 2: pn = int(v[-2]) + int(v[-1])
-            return sh, pn, "OK"
-        
-        return 0, 0, "NO_STATS_IN_FEED"
-    except Exception as e:
-        return 0, 0, f"ERR_{e}"
+        async with session.get(url, headers=headers, timeout=10) as r:
+            if r.status != 200: return 0, 0
+            data = await r.json()
+            sh, pn = 0, 0
+            
+            # SofaScore отдает стату в удобных списках
+            for period in data.get('statistics', []):
+                if period.get('period') == 'ALL': # Берем за весь матч
+                    for group in period.get('groups', []):
+                        for item in group.get('statisticsItems', []):
+                            name = item.get('name', '').lower()
+                            # Ищем по английским или русским ключам
+                            if 'shots on goal' in name or 'броски в створ' in name:
+                                sh = int(item.get('home', 0)) + int(item.get('away', 0))
+                            if 'penalty minutes' in name or 'штраф' in name:
+                                pn = int(item.get('home', 0)) + int(item.get('away', 0))
+            return sh, pn
+    except:
+        return 0, 0
 
 async def main():
-    log("--- ⚡️ v130.0: ПЕРЕХВАТЧИК LIVE-ПОТОКА ---")
-    async with AsyncSession() as session:
+    log("--- 🚀 v132.0: SOFASCORE API (БЕЗ КЛЮЧЕЙ И ВЫЛЕТОВ) ---")
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/122.0.0.0"
+    }
+    
+    async with aiohttp.ClientSession() as session:
         while True:
             try:
-                # Берем список матчей (это работает стабильно)
-                r = await session.get("https://www.flashscore.ru/x/feed/f_4_0_3_ru-ru_1", 
-                                      headers={"x-fsign": "SW9D1eZo"}, impersonate="chrome120")
-                
-                mids = re.findall(r'AA÷(.*?)(?=¬)', r.text)[:10]
-                log(f"🔎 В эфире {len(mids)} игр. Пробиваю защиту...")
-
-                for mid in mids:
-                    sh, pn, status = await get_stats_stealth(session, mid)
-                    if sh > 0:
-                        log(f"🏒 ЕСТЬ КОНТАКТ! {mid} | Броски: {sh} | Штраф: {pn}")
+                # 1. Забираем ВСЕ лайв-матчи по хоккею
+                live_url = "https://api.sofascore.com/api/v1/sport/ice-hockey/events/live"
+                async with session.get(live_url, headers=headers, timeout=10) as r:
+                    if r.status == 200:
+                        data = await r.json()
+                        events = data.get('events', [])
+                        
+                        found = 0
+                        for ev in events:
+                            league = ev.get('tournament', {}).get('name', '')
+                            
+                            # Проверяем, наша ли это лига
+                            if not any(l.upper() in league.upper() for l in WHITE_LIST):
+                                continue
+                                
+                            found += 1
+                            ev_id = ev.get('id')
+                            home = ev.get('homeTeam', {}).get('name', 'Home')
+                            away = ev.get('awayTeam', {}).get('name', 'Away')
+                            
+                            # Статус: Period 1, Pause (Перерыв), Ended и т.д.
+                            status = ev.get('status', {}).get('description', 'Live')
+                            h_score = ev.get('homeScore', {}).get('current', 0)
+                            a_score = ev.get('awayScore', {}).get('current', 0)
+                            
+                            # 2. Мгновенно тянем стату по ID матча
+                            sh, pn = await get_sofascore_stats(session, ev_id)
+                            
+                            log(f"🏒 [{league}] {home} {h_score}-{a_score} {away} | Статус: {status} | Броски: {sh} | Штраф: {pn}")
+                        
+                        if found == 0:
+                            log("📭 Подходящих матчей НХЛ/КХЛ сейчас нет в лайве.")
                     else:
-                        log(f"🥚 {mid} | {status}")
-
+                        log(f"🛑 Ошибка доступа к лайву: HTTP {r.status}")
+                        
             except Exception as e:
-                log(f"🛑 Ошибка: {e}")
+                log(f"🛑 Ошибка цикла: {e}")
+            
+            log("--- Жду 40 сек ---")
             await asyncio.sleep(40)
 
 if __name__ == "__main__":
