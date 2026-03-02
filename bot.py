@@ -11,35 +11,37 @@ async def get_sofascore_stats(session, event_id):
             data = await r.json()
             sh, pn = 0, 0
             
-            # Проходим по всем периодам, ищем 'ALL'
             for period_data in data.get('statistics', []):
+                # Нам нужна статистика за весь матч ('ALL')
                 if period_data.get('period') == 'ALL':
                     for group in period_data.get('groups', []):
                         for item in group.get('statisticsItems', []):
                             key = item.get('name', '').lower()
                             
-                            # 🏒 Ищем БРОСКИ (проверяем все варианты названий в API)
+                            # Функция для безопасного извлечения числа
+                            def get_val(item_obj, side):
+                                # Пробуем сначала 'homeValue', потом 'home'
+                                res = item_obj.get(f'{side}Value') or item_obj.get(side) or '0'
+                                return int(str(res).replace('%', ''))
+
+                            # 🏒 Ищем БРОСКИ (все варианты названий)
                             if any(x in key for x in ['shots on goal', 'shots on target', 'удары в створ', 'броски в створ']):
-                                h_val = str(item.get('home', '0')).replace('%','')
-                                a_val = str(item.get('away', '0')).replace('%','')
-                                sh = int(h_val) + int(a_val)
+                                sh = get_val(item, 'home') + get_val(item, 'away')
                             
                             # ⏳ Ищем ШТРАФ
                             if any(x in key for x in ['penalty minutes', 'штраф', 'penaltyminutes']):
-                                h_pn = str(item.get('home', '0'))
-                                a_pn = str(item.get('away', '0'))
-                                pn = int(h_pn) + int(a_pn)
+                                pn = get_val(item, 'home') + get_val(item, 'away')
             
-            # Если броски всё еще 0, ищем "Total shots" (иногда в КХЛ они так значатся)
+            # Если броски всё еще 0, берем "Total shots" (иногда в КХЛ так)
             if sh == 0:
                 for period_data in data.get('statistics', []):
                     if period_data.get('period') == 'ALL':
                         for group in period_data.get('groups', []):
                             for item in group.get('statisticsItems', []):
                                 if 'total shots' in item.get('name', '').lower():
-                                    sh = int(item.get('home', 0)) + int(item.get('away', 0))
+                                    sh = get_val(item, 'home') + get_val(item, 'away')
                                     
             return sh, pn
     except Exception as e:
-        log(f"⚠ Ошибка парсинга статы: {e}")
+        log(f"⚠ Ошибка парсинга: {e}")
         return 0, 0
