@@ -11,35 +11,37 @@ async def get_sofascore_stats(session, event_id):
             data = await r.json()
             sh, pn = 0, 0
             
+            # В SofaScore статистика лежит в списке 'statistics'
             for period_data in data.get('statistics', []):
-                # Нам нужна статистика за весь матч ('ALL')
+                # Нас интересует только статистика за весь матч (ALL)
                 if period_data.get('period') == 'ALL':
                     for group in period_data.get('groups', []):
                         for item in group.get('statisticsItems', []):
-                            key = item.get('name', '').lower()
+                            name = item.get('name', '').lower()
                             
-                            # Функция для безопасного извлечения числа
-                            def get_val(item_obj, side):
-                                # Пробуем сначала 'homeValue', потом 'home'
-                                res = item_obj.get(f'{side}Value') or item_obj.get(side) or '0'
-                                return int(str(res).replace('%', ''))
+                            # Универсальная функция вытягивания чисел
+                            def extract(obj, side):
+                                # Проверяем и 'homeValue', и просто 'home'
+                                val = obj.get(f'{side}Value') or obj.get(side) or '0'
+                                # Убираем проценты и лишние символы
+                                return int(str(val).split('(')[0].replace('%', '').strip())
 
-                            # 🏒 Ищем БРОСКИ (все варианты названий)
-                            if any(x in key for x in ['shots on goal', 'shots on target', 'удары в створ', 'броски в створ']):
-                                sh = get_val(item, 'home') + get_val(item, 'away')
+                            # 🏒 Ищем БРОСКИ (все возможные варианты названия в JSON)
+                            if any(x in name for x in ['shots on goal', 'shots on target', 'удары в створ', 'shotsongoal']):
+                                sh = extract(item, 'home') + extract(item, 'away')
                             
                             # ⏳ Ищем ШТРАФ
-                            if any(x in key for x in ['penalty minutes', 'штраф', 'penaltyminutes']):
-                                pn = get_val(item, 'home') + get_val(item, 'away')
+                            if any(x in name for x in ['penalty minutes', 'штраф', 'penaltyminutes']):
+                                pn = extract(item, 'home') + extract(item, 'away')
             
-            # Если броски всё еще 0, берем "Total shots" (иногда в КХЛ так)
+            # Резервный поиск, если броски все еще 0
             if sh == 0:
                 for period_data in data.get('statistics', []):
                     if period_data.get('period') == 'ALL':
                         for group in period_data.get('groups', []):
                             for item in group.get('statisticsItems', []):
                                 if 'total shots' in item.get('name', '').lower():
-                                    sh = get_val(item, 'home') + get_val(item, 'away')
+                                    sh = extract(item, 'home') + extract(item, 'away')
                                     
             return sh, pn
     except Exception as e:
