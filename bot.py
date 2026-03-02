@@ -1,83 +1,62 @@
 import asyncio, re, os, sys
 from curl_cffi.requests import AsyncSession
-from aiogram import Bot
 
-# Функция мгновенного вывода в логи Railway
 def log(msg):
     print(msg, flush=True)
 
-TOKEN = os.getenv("TELEGRAM_TOKEN")
-CHANNEL_ID = os.getenv("CHANNEL_ID")
-bot = Bot(token=TOKEN)
-
-WHITE_LIST = ['КХЛ', 'ВХЛ', 'МХЛ', 'НХЛ', 'АХЛ', 'ICE', 'Tipsport', 'Экстралига', 'Элитсериен']
+# Упростили список для максимального охвата
+WHITE_LIST = ['КХЛ', 'ВХЛ', 'МХЛ', 'НХЛ', 'АХЛ', 'ICE', 'Tipsport', 'Экстралига', 'Maxa', 'Элитсериен', 'ЖХЛ', 'НМХЛ']
 
 async def get_stats_with_curl(session, mid):
-    """Тянем статистику именно через curl_cffi"""
     try:
         url = f"https://www.flashscore.ru/x/feed/df_st_1_{mid}"
-        headers = {
-            "x-fsign": "SW9D1eZo",
-            "referer": "https://www.flashscore.ru/"
-        }
-        # Используем имитацию браузера Chrome
+        headers = {"x-fsign": "SW9D1eZo", "referer": "https://www.flashscore.ru/"}
         r = await session.get(url, headers=headers, impersonate="chrome110", timeout=15)
         
         sh, pn = 0, 0
-        sections = r.text.split('~')
-        for s in sections:
-            # Парсим броски
-            if '158' in s or 'SOG' in s:
-                nums = re.findall(r'(\d+)', s)
-                if len(nums) >= 2: sh = int(nums[-2]) + int(nums[-1])
-            # Парсим штрафы
+        # Ищем коды статы: 158 - броски, 2 - штраф
+        for s in r.text.split('~'):
+            if '158' in s:
+                res = re.findall(r'(\d+)', s)
+                if len(res) >= 2: sh = int(res[-2]) + int(res[-1])
             if '2' in s and 'PN' in s:
-                nums = re.findall(r'(\d+)', s)
-                if len(nums) >= 2: pn = int(nums[-2]) + int(nums[-1])
+                res = re.findall(r'(\d+)', s)
+                if len(res) >= 2: pn = int(res[-2]) + int(res[-1])
         return sh, pn
-    except Exception as e:
-        log(f"⚠️ Ошибка в curl_cffi для {mid}: {e}")
-        return 0, 0
+    except: return 0, 0
 
 async def main():
-    log("--- 🚀 ЗАПУСК v117.0 (curl_cffi + Force Log) ---")
-    
+    log("--- 🦾 ЗАПУСК v118.0 (УЛУЧШЕННЫЙ ПОИСК) ---")
     async with AsyncSession() as session:
         while True:
             try:
-                # 1. Загружаем основной фид Livescore
-                log("📡 Запрос к главному фиду...")
+                # Берем все матчи (код f_4_0_3 - это хоккейный лайв)
                 r = await session.get("https://www.flashscore.ru/x/feed/f_4_0_3_ru-ru_1", 
                                       headers={"x-fsign": "SW9D1eZo"}, impersonate="chrome110")
                 
                 blocks = r.text.split('~')
-                found_matches = 0
-                
-                for block in blocks:
-                    if 'AA÷' in block:
-                        mid = block.split('AA÷')[1].split('¬')[0]
-                        
-                        # Проверка лиги
-                        cur_l = ""
-                        if 'ZA÷' in block: cur_l = block.split('ZA÷')[1].split('¬')[0]
-                        if not any(l in cur_l for l in WHITE_LIST): continue
+                found = False
+                cur_league = ""
 
-                        h_t = block.split('AE÷')[1].split('¬')[0] if 'AE÷' in block else "Home"
-                        a_t = block.split('AF÷')[1].split('¬')[0] if 'AF÷' in block else "Away"
+                for b in blocks:
+                    if b.startswith('ZA÷'): cur_league = b.split('ZA÷')[1].split('¬')[0]
+                    if b.startswith('AA÷'):
+                        mid = b.split('AA÷')[1].split('¬')[0]
                         
-                        found_matches += 1
-                        
-                        # ТЕСТ СТАТИСТИКИ: Тянем её прямо сейчас для логов
-                        sh, pn = await get_stats_with_curl(session, mid)
-                        log(f"📊 [ST] {h_t} - {a_t} | Броски: {sh} | Штраф: {pn} | Лига: {cur_l}")
+                        # Проверка: есть ли хоть одно слово из нашего списка в названии лиги
+                        if any(word.upper() in cur_league.upper() for word in WHITE_LIST):
+                            found = True
+                            h_t = b.split('AE÷')[1].split('¬')[0] if 'AE÷' in b else "Home"
+                            a_t = b.split('AF÷')[1].split('¬')[0] if 'AF÷' in b else "Away"
+                            
+                            # Тянем статистику немедленно для теста
+                            sh, pn = await get_stats_with_curl(session, mid)
+                            log(f"📊 [DATA] {h_t} - {a_t} | Броски: {sh} | Штраф: {pn} | Лига: {cur_league}")
 
-                if found_matches == 0:
-                    log("📭 Матчей из списка в лайве не найдено.")
+                if not found:
+                    log("📭 Совпадений по лигам всё еще нет. Проверь список.")
                 
-                log("--- ✅ Проверка завершена, жду 40 сек ---")
-            except Exception as e:
-                log(f"🛑 ОШИБКА ЦИКЛА: {e}")
-            
+            except Exception as e: log(f"🛑 Ошибка: {e}")
             await asyncio.sleep(40)
 
 if __name__ == "__main__":
