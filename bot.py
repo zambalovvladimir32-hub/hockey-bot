@@ -1,52 +1,102 @@
-import asyncio, os, logging
+import asyncio, os, logging, re
 from aiogram import Bot
 from curl_cffi.requests import AsyncSession
+from urllib.parse import quote
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
-logger = logging.getLogger("Explorer_v56.5")
+logger = logging.getLogger("HockeyPro_v57.0")
 
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHANNEL_ID = os.getenv("CHANNEL_ID")
 bot = Bot(token=TOKEN)
 
-class DataExplorer:
+class HockeyLive:
     def __init__(self):
-        self.headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/122.0.0.0 Safari/537.36"}
+        self.sent_cache = {}
+        self.flash_headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+            "x-fsign": "SW9D1eZo", 
+            "X-Referer": "https://www.flashscore.ru/"
+        }
+        self.sofa_headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+        }
 
-    async def explore_match(self, session, e_id, name):
-        url = f"https://www.sofascore.com/api/v1/event/{e_id}/statistics"
+    async def get_sofa_stats(self, session, h_team, a_team):
+        """Поиск матча и сбор статистики по ПРАВИЛЬНЫМ ключам"""
         try:
-            r = await session.get(url, headers=self.headers, impersonate="chrome110")
-            if r.status_code == 200:
-                data = r.json()
-                for period in data.get('statistics', []):
+            clean_h = re.sub(r'\(.*?\)', '', h_team).strip()
+            q = quote(clean_h)
+            search_url = f"https://www.sofascore.com/api/v1/search/all?q={q}"
+            
+            r_search = await session.get(search_url, headers=self.sofa_headers, impersonate="chrome110")
+            if r_search.status_code != 200: return None
+            
+            data = r_search.json()
+            event_id = next((res['entity']['id'] for res in data.get('results', []) 
+                            if res.get('type') == 'event' and 
+                            res.get('entity', {}).get('sport', {}).get('slug') == 'ice-hockey'), None)
+            
+            if not event_id: return None
+
+            stat_url = f"https://www.sofascore.com/api/v1/event/{event_id}/statistics"
+            r_stat = await session.get(stat_url, headers=self.sofa_headers, impersonate="chrome110")
+            
+            if r_stat.status_code == 200:
+                s_data = r_stat.json()
+                res = {"shots": 0, "pen": 0}
+                for period in s_data.get('statistics', []):
                     if period.get('period') == 'ALL':
-                        logger.info(f"--- 📊 АНАЛИЗ МАТЧА: {name} ---")
                         for group in period.get('groups', []):
                             for item in group.get('statisticsItems', []):
-                                # ПЕЧАТАЕМ ВСЕ ИМЕНА ПОКАЗАТЕЛЕЙ
-                                logger.info(f"Found Key: '{item['name']}' | Home: {item['homeValue']} | Away: {item['awayValue']}")
-            else:
-                logger.warning(f"❌ {name}: Ошибка {r.status_code}")
-        except Exception as e:
-            logger.error(f"💥 Ошибка: {e}")
+                                # ТЕ САМЫЕ КЛЮЧИ ИЗ ЛОГОВ v56.5
+                                if item['name'] == 'Shots':
+                                    res['shots'] = int(item['homeValue']) + int(item['awayValue'])
+                                if item['name'] == 'Penalty minutes':
+                                    res['pen'] = int(item['homeValue']) + int(item['awayValue'])
+                return res
+            return None
+        except: return None
 
     async def run(self):
-        logger.info("🕵️‍♂️ ЗАПУСК v56.5: ИССЛЕДУЕМ НАЗВАНИЯ ПОЛЕЙ...")
+        logger.info("🏒 БОТ ЗАПУЩЕН v57.0: Охота на перерывы началась!")
         async with AsyncSession() as session:
-            # Берем архивные матчи NHL за 1 марта
-            url = "https://www.sofascore.com/api/v1/sport/ice-hockey/scheduled-events/2026-03-01"
-            r = await session.get(url, headers=self.headers, impersonate="chrome110")
-            
-            if r.status_code == 200:
-                events = r.json().get('events', [])
-                targets = [ev for ev in events if ev.get('tournament', {}).get('name') == 'NHL'][:3]
-                
-                for ev in targets:
-                    await self.explore_match(session, ev['id'], ev['homeTeam']['name'])
-                    await asyncio.sleep(2)
-            else:
-                logger.error(f"API Error: {r.status_code}")
+            while True:
+                try:
+                    # Мониторим Flashscore на наличие перерывов (AC÷46)
+                    url = "https://www.flashscore.ru/x/feed/f_4_0_3_ru-ru_1"
+                    r = await session.get(url, headers=self.flash_headers, impersonate="chrome110")
+                    
+                    if r.status_code == 200 and "¬" in r.text:
+                        matches = [m for m in r.text.split('~AA÷')[1:] if "AC÷46" in m]
+                        
+                        for m_block in matches:
+                            m_id = m_block.split('¬')[0]
+                            if m_id in self.sent_cache: continue
+
+                            h_score = int(m_block.split('AG÷')[1].split('¬')[0])
+                            a_score = int(m_block.split('AH÷')[1].split('¬')[0])
+
+                            if (h_score + a_score) <= 1:
+                                h_name = m_block.split('AE÷')[1].split('¬')[0]
+                                a_name = m_block.split('AF÷')[1].split('¬')[0]
+                                
+                                stats = await self.get_sofa_stats(session, h_name, a_name)
+                                
+                                if stats:
+                                    # Условие: 11+ бросков ИЛИ 4+ мин штрафа
+                                    if stats['shots'] >= 11 or stats['pen'] >= 4:
+                                        msg = (f"🏒 **{h_name} {h_score}:{a_score} {a_name}**\n"
+                                               f"⏱ ПЕРИОД: `ПЕРЕРЫВ`\n"
+                                               f"🎯 Броски: `{stats['shots']}` | ⚖️ Штраф: `{stats['pen']} мин`")
+                                        await bot.send_message(CHANNEL_ID, msg, parse_mode="Markdown")
+                                        self.sent_cache[m_id] = True
+                                        logger.info(f"✅ СИГНАЛ: {h_name} - {a_name}")
+
+                    await asyncio.sleep(120) # Проверка каждые 2 минуты
+                except Exception as e:
+                    logger.error(f"Ошибка цикла: {e}")
+                    await asyncio.sleep(60)
 
 if __name__ == "__main__":
-    asyncio.run(DataExplorer().run())
+    asyncio.run(HockeyLive().run())
