@@ -12,39 +12,35 @@ async def get_stats(session, mid):
             periods = data.get('statistics', [])
             if not periods: return 0, 0
 
-            # 1. Берем 'ALL' или первый доступный период
+            # 1. Приоритет блоку 'ALL', если нет - текущему периоду
             target = next((p for p in periods if p.get('period') == 'ALL'), periods[0])
             
             sh, pn = 0, 0
             for group in target.get('groups', []):
                 for item in group.get('statisticsItems', []):
-                    # Проверяем и ИМЯ, и КЛЮЧ (key в API всегда на английском и стабильнее)
-                    name = str(item.get('name', '')).lower()
-                    key = str(item.get('key', '')).lower()
+                    # Используем системный 'key' — он надежнее названия
+                    stat_key = str(item.get('key', '')).lower()
+                    stat_name = str(item.get('name', '')).lower()
                     
-                    def get_val(side):
-                        # Пробуем все варианты ключей SofaScore (Value, Total, или просто имя стороны)
-                        for k in [f'{side}Value', f'{side}Total', side]:
-                            v = item.get(k)
-                            if v is not None:
-                                try:
-                                    # Чистим: отсекаем скобки (%), дроби (11/20) и лишние знаки
-                                    return int(str(v).split('(')[0].split('/')[0].replace('%','').strip())
-                                except: continue
-                        return 0
+                    def extract(side):
+                        # Ищем значение в разных полях (Value, Total или просто side)
+                        val = item.get(f'{side}Value') or item.get(f'{side}Total') or item.get(side) or '0'
+                        try:
+                            # Убираем всё лишнее: скобки, проценты, дроби (для КХЛ)
+                            return int(str(val).split('(')[0].split('/')[0].replace('%','').strip())
+                        except: return 0
 
-                    # 🏒 БРОСКИ В СТВОР
-                    # Проверяем по системному ключу или по набору слов
-                    is_shot = 'shotsongoal' in key or 'shotsontarget' in key or \
-                              (any(x in name for x in ['створ', 'target', 'goal', 'броски']) and 'block' not in name)
+                    # 🏒 УДАРЫ В СТВОР (Только shotsOnGoal или Shots on target)
+                    is_on_goal = 'shotsongoal' in stat_key or 'shotsontarget' in stat_key or \
+                                 ('створ' in stat_name)
                     
-                    if is_shot and sh == 0: # Берем первое найденное совпадение
-                        sh = get_val('home') + get_val('away')
+                    if is_on_goal:
+                        sh = extract('home') + extract('away')
                     
-                    # ⏳ ШТРАФНОЕ ВРЕМЯ
-                    is_penalty = 'penaltyminutes' in key or any(x in name for x in ['penalty', 'штраф', 'мин'])
-                    if is_penalty and pn == 0:
-                        pn = get_val('home') + get_val('away')
+                    # ⏳ ШТРАФНОЕ ВРЕМЯ (Penalty minutes)
+                    is_penalty = 'penaltyminutes' in stat_key or 'штраф' in stat_name or 'penalty' in stat_name
+                    if is_penalty:
+                        pn = extract('home') + extract('away')
             
             return sh, pn
     except: return 0, 0
