@@ -2,81 +2,87 @@ import asyncio, re, os
 from curl_cffi.requests import AsyncSession
 from aiogram import Bot
 
+# Инициализация бота
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHANNEL_ID = os.getenv("CHANNEL_ID")
 bot = Bot(token=TOKEN)
 
-# ЭТИ ЛИГИ МЫ УЖЕ ЗНАЕМ - ИХ ПРОПУСКАЕМ
-ALREADY_KNOWN = [
-    'АВСТРИЯ: Лига ICE', 'РОССИЯ: OLIMPBET - МХЛ', 'РОССИЯ: ЖХЛ', 
-    'СЛОВАКИЯ: Tipsport liga', 'ЧЕХИЯ: Maxa liga', 'ЧЕХИЯ: Экстралига', 
-    'ШВЕЦИЯ: Элитсериен'
-]
-
-async def second_pass_scanner(days_range=7):
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"}
-    new_leagues = set()
-    tested_in_this_run = set()
+async def live_monitor():
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+    }
+    processed_matches = set() 
 
     async with AsyncSession() as session:
-        print(f"🚀 ЗАПУСК ВТОРОГО ПРОХОДА (Исключаем {len(ALREADY_KNOWN)} лиг)")
+        print("✅ БОТ ЗАПУЩЕН. Режим: ПЕРЕРЫВ | 0:0 | Броски >= 5 | Штраф >= 2")
         
-        for d in range(1, days_range + 1):
-            date_offset = f"-{d}"
-            print(f"📅 Сканирую архив за {d} дн. назад...")
-            
-            f_url = f"https://www.flashscore.ru/x/feed/f_4_{date_offset}_3_ru-ru_1"
+        while True:
             try:
-                r = await session.get(f_url, headers={"x-fsign": "SW9D1eZo"}, impersonate="chrome110")
+                # 1. Запрос лайв-фида Flashscore
+                r = await session.get("https://www.flashscore.ru/x/feed/f_4_0_3_ru-ru_1", 
+                                      headers={"x-fsign": "SW9D1eZo"}, impersonate="chrome110")
+                
                 blocks = r.text.split('~')
-                cur_l = "Unknown"
+                current_league = "Unknown"
                 
                 for block in blocks:
                     if block.startswith('ZA÷'): 
-                        cur_l = block.split('ZA÷')[1].split('¬')[0]
+                        current_league = block.split('ZA÷')[1].split('¬')[0]
                     
-                    # ПРОПУСКАЕМ ИЗВЕСТНЫЕ И УЖЕ ПРОВЕРЕННЫЕ
-                    if cur_l in ALREADY_KNOWN or cur_l in new_leagues or cur_l in tested_in_this_run:
-                        continue
-
                     if block.startswith('AA÷'):
-                        h_team = block.split('AE÷')[1].split('¬')[0]
-                        a_team = block.split('AF÷')[1].split('¬')[0]
-                        tested_in_this_run.add(cur_l)
-                        
-                        search_q = f"{h_team} {a_team}".split('(')[0].strip()
-                        print(f"🔎 Новая лига? Проверяю: {cur_l}")
-                        
-                        try:
-                            s_url = f"https://www.sofascore.com/api/v1/search/all?q={search_q}"
-                            s_req = await session.get(s_url, headers=headers, impersonate="chrome110")
-                            await asyncio.sleep(2) # Пауза для стабильности
-                            
-                            results = s_req.json().get('results', [])
-                            eid = next((res['entity']['id'] for res in results if res.get('type') == 'event'), None)
-                            
-                            if not eid: continue
+                        mid = block.split('AA÷')[1].split('¬')[0]
+                        if mid in processed_matches: continue
 
-                            st_req = await session.get(f"https://www.sofascore.com/api/v1/event/{eid}/statistics", headers=headers)
-                            if st_req.status_code == 200:
-                                data = st_req.json()
-                                # Ищем любые признаки бросков и штрафов в любой вкладке
-                                all_names = []
-                                for p in data.get('statistics', []):
-                                    all_names.extend([i['name'] for g in p.get('groups', []) for i in g.get('statisticsItems', [])])
-                                
-                                if 'Shots' in all_names and 'Penalty minutes' in all_names:
-                                    new_leagues.add(cur_l)
-                                    print(f"✨ НАЙДЕНА НОВАЯ: {cur_l}")
-                                    await bot.send_message(CHANNEL_ID, f"🆕 Новая лига в копилку: `{cur_l}`")
-                        except: continue
-            except: continue
+                        # Проверка: Перерыв (3 или 46) + Счет (0:0)
+                        is_break = 'AB÷3' in block or 'NS÷46' in block
+                        is_zero = 'AG÷0' in block and 'AH÷0' in block
 
-        if new_leagues:
-            formatted = ",\n".join([f"'{l}'" for l in sorted(new_leagues)])
-            await bot.send_message(CHANNEL_ID, f"🏁 **ВТОРОЙ ПРОХОД ЗАВЕРШЕН**\n\nДополнительные лиги:\n`{formatted}`")
-        else:
-            await bot.send_message(CHANNEL_ID, "⚠️ Новых лиг с полной статой не обнаружено.")
+                        if is_break and is_zero:
+                            h_team = block.split('AE÷')[1].split('¬')[0]
+                            a_team = block.split('AF÷')[1].split('¬')[0]
+                            
+                            # Поиск ID на SofaScore
+                            q = f"{h_team} {a_team}".split('(')[0].strip()
+                            s_search = await session.get(f"https://www.sofascore.com/api/v1/search/all?q={q}", headers=headers)
+                            await asyncio.sleep(1.2) # Анти-бан пауза
+                            
+                            results = s_search.json().get('results', [])
+                            eid = next((i['entity']['id'] for i in results if i.get('type') == 'event'), None)
+                            
+                            if eid:
+                                # Запрос статики
+                                st_req = await session.get(f"https://www.sofascore.com/api/v1/event/{eid}/statistics", headers=headers)
+                                if st_req.status_code == 200:
+                                    data = st_req.json()
+                                    shots, pens = 0, 0
+                                    
+                                    # Парсим статику: приоритет 1ST, запасной вариант ALL
+                                    for p in data.get('statistics', []):
+                                        if p.get('period') in ['1ST', 'ALL']:
+                                            for g in p.get('groups', []):
+                                                for item in g.get('statisticsItems', []):
+                                                    if item['name'] == 'Shots':
+                                                        val = int(item['homeValue']) + int(item['awayValue'])
+                                                        shots = max(shots, val)
+                                                    if item['name'] == 'Penalty minutes':
+                                                        val = int(item['homeValue']) + int(item['awayValue'])
+                                                        pens = max(pens, val)
+
+                                    # Проверка условий
+                                    if shots >= 5 and pens >= 2:
+                                        msg = (f"🏟 **ПЕРЕРЫВ (Счёт 0:0)**\n"
+                                               f"🏆 {current_league}\n"
+                                               f"🏒 {h_team} — {a_team}\n\n"
+                                               f"🎯 Броски в створ: **{shots}**\n"
+                                               f"⚖️ Штрафное время: **{pens} мин.**")
+                                        await bot.send_message(CHANNEL_ID, msg, parse_mode="Markdown")
+                                        processed_matches.add(mid)
+                                        print(f"🎯 Сигнал отправлен: {h_team} - {a_team}")
+
+            except Exception as e:
+                pass # Игнорируем ошибки сети
+            
+            await asyncio.sleep(45)
 
 if __name__ == "__main__":
-    asyncio.run(second_pass_scanner(7))
+    asyncio.run(live_monitor())
