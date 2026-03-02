@@ -1,8 +1,3 @@
-import asyncio
-import aiohttp
-
-LEAGUES = ['KHL', 'КХЛ', 'NHL', 'НХЛ', 'AHL', 'АХЛ']
-
 async def get_stats(session, mid):
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
@@ -17,51 +12,39 @@ async def get_stats(session, mid):
             periods = data.get('statistics', [])
             if not periods: return 0, 0
 
-            # Выбираем лучший блок: сначала 'ALL', если нет - последний доступный (1st period и т.д.)
+            # 1. Берем 'ALL' или первый доступный период
             target = next((p for p in periods if p.get('period') == 'ALL'), periods[0])
             
             sh, pn = 0, 0
             for group in target.get('groups', []):
                 for item in group.get('statisticsItems', []):
-                    name = item.get('name', '').lower()
+                    # Проверяем и ИМЯ, и КЛЮЧ (key в API всегда на английском и стабильнее)
+                    name = str(item.get('name', '')).lower()
+                    key = str(item.get('key', '')).lower()
                     
-                    # Универсальный тягач значений
                     def get_val(side):
-                        v = item.get(f'{side}Value') or item.get(side) or '0'
-                        return int(str(v).split('(')[0].replace('%','').strip())
+                        # Пробуем все варианты ключей SofaScore (Value, Total, или просто имя стороны)
+                        for k in [f'{side}Value', f'{side}Total', side]:
+                            v = item.get(k)
+                            if v is not None:
+                                try:
+                                    # Чистим: отсекаем скобки (%), дроби (11/20) и лишние знаки
+                                    return int(str(v).split('(')[0].split('/')[0].replace('%','').strip())
+                                except: continue
+                        return 0
 
-                    # БРОСКИ: ищем "shots on goal", "target" или "створ"
-                    if any(x in name for x in ['target', 'goal', 'створ', 'shot']) and 'block' not in name:
+                    # 🏒 БРОСКИ В СТВОР
+                    # Проверяем по системному ключу или по набору слов
+                    is_shot = 'shotsongoal' in key or 'shotsontarget' in key or \
+                              (any(x in name for x in ['створ', 'target', 'goal', 'броски']) and 'block' not in name)
+                    
+                    if is_shot and sh == 0: # Берем первое найденное совпадение
                         sh = get_val('home') + get_val('away')
                     
-                    # ШТРАФ: возвращаем как было в v132
-                    if any(x in name for x in ['penalty', 'штраф', 'min']):
+                    # ⏳ ШТРАФНОЕ ВРЕМЯ
+                    is_penalty = 'penaltyminutes' in key or any(x in name for x in ['penalty', 'штраф', 'мин'])
+                    if is_penalty and pn == 0:
                         pn = get_val('home') + get_val('away')
             
             return sh, pn
     except: return 0, 0
-
-async def main():
-    print("--- 🔥 v139.0: СТАТИСТИКА ОЖИВАЕТ ---", flush=True)
-    async with aiohttp.ClientSession() as session:
-        while True:
-            try:
-                async with session.get("https://api.sofascore.com/api/v1/sport/ice-hockey/events/live", timeout=10) as r:
-                    if r.status != 200: continue
-                    events = (await r.json()).get('events', [])
-                    for ev in events:
-                        l_name = ev.get('tournament', {}).get('name', '')
-                        if not any(t in l_name.upper() for t in LEAGUES): continue
-                        
-                        mid = ev.get('id')
-                        home, away = ev['homeTeam']['shortName'], ev['awayTeam']['shortName']
-                        score = f"{ev['homeScore'].get('current',0)}-{ev['awayScore'].get('current',0)}"
-                        status = ev['status']['description']
-                        
-                        sh, pn = await get_stats(session, mid)
-                        print(f"🏒 {home} {score} {away} | {status} | Броски: {sh} | Штраф: {pn}", flush=True)
-            except: pass
-            await asyncio.sleep(45)
-
-if __name__ == "__main__":
-    asyncio.run(main())
