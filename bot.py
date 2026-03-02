@@ -4,13 +4,13 @@ from curl_cffi.requests import AsyncSession
 from urllib.parse import quote
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
-logger = logging.getLogger("HockeyBalanced_v63.0")
+logger = logging.getLogger("HockeyWide_v65.0")
 
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHANNEL_ID = os.getenv("CHANNEL_ID")
 bot = Bot(token=TOKEN)
 
-class HockeyBalancedBot:
+class HockeyWideBot:
     def __init__(self):
         self.sent_cache = {}
         self.flash_headers = {
@@ -59,7 +59,6 @@ class HockeyBalancedBot:
             h_score = int(m_block.split('AG÷')[1].split('¬')[0])
             a_score = int(m_block.split('AH÷')[1].split('¬')[0])
             
-            # 1. Счёт 0:0, 1:0 или 0:1
             if (h_score + a_score) > 1: return 
 
             h_name = m_block.split('AE÷')[1].split('¬')[0]
@@ -68,23 +67,23 @@ class HockeyBalancedBot:
             stats = await self.get_sofa_data(session, h_name)
             if not stats: return
 
-            # 🔥 ОБНОВЛЕННАЯ ЛОГИКА: Броски >= 11 И Штраф >= 2 (Одновременно)
-            if stats['shots'] >= 11 and stats['pen'] >= 2:
-                msg = (f"🏒 **СИГНАЛ: АКТИВНЫЙ ПЕРЕРЫВ**\n"
+            # 🔥 МИНИМАЛЬНЫЕ ПОРОГИ: Броски в створ >= 5 И Штраф >= 2
+            if stats['shots'] >= 5 and stats['pen'] >= 2:
+                msg = (f"🏒 **СИГНАЛ: LIVE ХОККЕЙ**\n"
                        f"📊 {h_name} {h_score}:{a_score} {a_name}\n"
                        f"⏱ Статус: `ПЕРЕРЫВ` (1-й период)\n"
-                       f"🎯 Броски: `{stats['shots']}` (>=11 ✅)\n"
-                       f"⚖️ Штраф: `{stats['pen']} мин` (>=2 ✅)")
+                       f"🎯 Броски в створ: `{stats['shots']}` (>=5 ✅)\n"
+                       f"⚖️ Штрафное время: `{stats['pen']} мин` (>=2 ✅)")
                 
                 await bot.send_message(CHANNEL_ID, msg, parse_mode="Markdown")
                 self.sent_cache[m_id] = True
-                logger.info(f"✅ СИГНАЛ ОТПРАВЛЕН: {h_name} (Б:{stats['shots']} Ш:{stats['pen']})")
+                logger.info(f"✅ СИГНАЛ: {h_name} (Б:{stats['shots']} Ш:{stats['pen']})")
             else:
-                logger.info(f"📉 {h_name}: Недобор (Б:{stats['shots']} Ш:{stats['pen']})")
+                logger.info(f"📉 Пропуск {h_name}: Б:{stats['shots']} Ш:{stats['pen']}")
         except: pass
 
     async def run(self):
-        logger.info("🚀 ЗАПУСК v63.0: BALANCED (Счёт + Броски 11+ + Штраф 2+)")
+        logger.info("🚀 ЗАПУСК v65.0: Броски 5+ / Штраф 2+")
         async with AsyncSession() as session:
             while True:
                 try:
@@ -99,4 +98,4 @@ class HockeyBalancedBot:
                 except: await asyncio.sleep(60)
 
 if __name__ == "__main__":
-    asyncio.run(HockeyBalancedBot().run())
+    asyncio.run(HockeyWideBot().run())
