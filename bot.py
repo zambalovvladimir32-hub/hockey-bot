@@ -4,37 +4,42 @@ from curl_cffi.requests import AsyncSession
 from urllib.parse import quote
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
-logger = logging.getLogger("HockeyTEST_v49.1")
+logger = logging.getLogger("HockeyHybrid_v52.0")
 
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHANNEL_ID = os.getenv("CHANNEL_ID")
-ZENROWS_TOKEN = os.getenv("ZENROWS_TOKEN") 
-
 bot = Bot(token=TOKEN)
 
-class HockeyLogic:
-    async def fetch_flashscore(self, session):
-        url = "https://www.flashscore.ru/x/feed/f_4_0_3_ru-ru_1"
-        # Используем ZenRows для обхода блока списка
-        api_url = f"https://api.zenrows.com/v1/?apikey={ZENROWS_TOKEN}&url={quote(url)}&premium_proxy=true"
-        try:
-            r = await session.get(api_url, timeout=30)
-            return r.text if r.status_code == 200 else None
-        except Exception as e:
-            logger.error(f"Flashscore error: {e}")
-            return None
+class HockeyHybrid:
+    def __init__(self):
+        self.sent_cache = {}
+        # Заголовки для обхода простых блокировок
+        self.headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+            "X-Referer": "https://www.flashscore.ru/",
+            "Origin": "https://www.sofascore.com"
+        }
 
-    async def get_sofascore_stats(self, session, h_name, a_name):
+    async def fetch_flashscore_list(self, session):
+        """Получаем список матчей с Flashscore напрямую"""
+        url = "https://www.flashscore.ru/x/feed/f_4_0_3_ru-ru_1"
         try:
-            # 1. Поиск матча
-            search_query = quote(f"{h_name} {a_name}")
-            search_url = f"https://www.sofascore.com/api/v1/search/all?q={search_query}"
-            headers = {"User-Agent": "Mozilla/5.0"}
+            r = await session.get(url, headers=self.headers, timeout=20)
+            if r.status_code == 200:
+                return r.text
+            logger.warning(f"Flashscore status: {r.status_code}")
+            return None
+        except: return None
+
+    async def get_sofa_stats(self, session, h_name, a_name):
+        """Ищем матч на SofaScore и берем статистику"""
+        try:
+            # 1. Поиск матча по именам
+            query = quote(f"{h_name} {a_name}")
+            search_url = f"https://www.sofascore.com/api/v1/search/all?q={query}"
+            r_search = await session.get(search_url, headers=self.headers)
             
-            r_search = await session.get(search_url, headers=headers)
-            if r_search.status_code != 200: 
-                logger.warning(f"SofaSearch status: {r_search.status_code}")
-                return None
+            if r_search.status_code != 200: return None
             
             data = r_search.json()
             event_id = None
@@ -43,61 +48,67 @@ class HockeyLogic:
                     event_id = res['entity']['id']
                     break
             
-            if not event_id:
-                logger.warning(f"❌ Матч {h_name} не найден на SofaScore")
-                return None
+            if not event_id: return None
 
-            # 2. Статистика
+            # 2. Получение статистики
             stat_url = f"https://www.sofascore.com/api/v1/event/{event_id}/statistics"
-            r_stat = await session.get(stat_url, headers=headers)
+            r_stat = await session.get(stat_url, headers=self.headers)
             
             if r_stat.status_code == 200:
-                stats_data = r_stat.json()
+                s_data = r_stat.json()
                 res = {"shots": 0, "pen": 0}
-                # Парсим JSON (SofaScore отдает структуру по периодам или ALL)
-                for stat_group in stats_data.get('statistics', []):
-                    if stat_group.get('period') == 'ALL':
-                        for group in stat_group.get('groups', []):
+                for period in s_data.get('statistics', []):
+                    if period.get('period') == 'ALL':
+                        for group in period.get('groups', []):
                             for item in group.get('statisticsItems', []):
                                 if 'Shots on goal' in item['name']:
                                     res['shots'] = int(item['homeValue']) + int(item['awayValue'])
                                 if 'Penalty minutes' in item['name']:
                                     res['pen'] = int(item['homeValue']) + int(item['awayValue'])
                 return res
-            return None
-        except Exception as e:
-            logger.error(f"SofaStat error: {e}")
-            return None
+        except: return None
 
     async def run(self):
-        logger.info("🧪 ТЕСТОВЫЙ ЗАПУСК v49.1: ПРОВЕРКА СВЯЗКИ API")
+        logger.info("🦾 ГИБРИД v52.0: Flashscore (Live) + SofaScore (Stats)")
         async with AsyncSession() as session:
-            list_data = await self.fetch_flashscore(session)
-            if list_data and "¬" in list_data:
-                # Берем первые 3 любых матча из списка для теста
-                matches = list_data.split('~AA÷')[1:4]
-                logger.info(f"🔎 Взял {len(matches)} матча для теста...")
+            while True:
+                try:
+                    data = await self.fetch_flashscore_list(session)
+                    if data and "¬" in data:
+                        # Фильтруем матчи в перерыве (AC÷46)
+                        matches = [m for m in data.split('~AA÷')[1:] if "AC÷46" in m]
+                        logger.info(f"🏟 Перерывы на Flashscore: {len(matches)}")
 
-                for m_block in matches:
-                    h_name = m_block.split('AE÷')[1].split('¬')[0]
-                    a_name = m_block.split('AF÷')[1].split('¬')[0]
-                    
-                    logger.info(f"🎲 Тестирую: {h_name} vs {a_name}")
-                    
-                    # Очистка названия для поиска
-                    clean_h = re.sub(r'\(.*?\)', '', h_name).strip()
-                    clean_a = re.sub(r'\(.*?\)', '', a_name).strip()
-                    
-                    res = await self.get_sofascore_stats(session, clean_h, clean_a)
-                    
-                    if res:
-                        logger.info(f"✅ УСПЕХ! Найдено на SofaScore. Броски: {res['shots']}, Штраф: {res['pen']}")
-                        # Отправим тестовое сообщение, чтобы проверить и Телеграм
-                        await bot.send_message(CHANNEL_ID, f"🧪 ТЕСТ СВЯЗКИ:\n🏒 {h_name} - {a_name}\n🎯 Броски: {res['shots']}")
-                    else:
-                        logger.warning(f"⚠️ Для матча {h_name} статика не получена (возможно, еще нет данных)")
-            else:
-                logger.error("❌ Не удалось получить список матчей с Flashscore. Проверь ZenRows!")
+                        for m_block in matches:
+                            m_id = m_block.split('¬')[0]
+                            if m_id in self.sent_cache: continue
+
+                            h_score = int(m_block.split('AG÷')[1].split('¬')[0])
+                            a_score = int(m_block.split('AH÷')[1].split('¬')[0])
+
+                            if (h_score + a_score) <= 1:
+                                h_team = m_block.split('AE÷')[1].split('¬')[0]
+                                a_team = m_block.split('AF÷')[1].split('¬')[0]
+                                
+                                # Очистка имен (убираем (Rus) и т.д.)
+                                clean_h = re.sub(r'\(.*?\)', '', h_team).strip()
+                                clean_a = re.sub(r'\(.*?\)', '', a_team).strip()
+
+                                logger.info(f"🔎 Запрос статистики Sofa для {clean_h}")
+                                stats = await self.get_sofa_stats(session, clean_h, clean_a)
+                                
+                                if stats:
+                                    if stats['shots'] >= 11 or stats['pen'] >= 4:
+                                        msg = (f"🏒 **{h_team} {h_score}:{a_score} {a_team}**\n"
+                                               f"🎯 Броски: `{stats['shots']}` | ⚖️ Штраф: `{stats['pen']} мин`")
+                                        await bot.send_message(CHANNEL_ID, msg, parse_mode="Markdown")
+                                        self.sent_cache[m_id] = True
+                                        logger.info(f"✅ Сигнал отправлен: {h_team}")
+
+                    await asyncio.sleep(150) # Проверка каждые 2.5 минуты
+                except Exception as e:
+                    logger.error(f"Цикл: {e}")
+                    await asyncio.sleep(60)
 
 if __name__ == "__main__":
-    asyncio.run(HockeyLogic().run())
+    asyncio.run(HockeyHybrid().run())
