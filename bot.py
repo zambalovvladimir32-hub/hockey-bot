@@ -3,57 +3,52 @@ import aiohttp
 import os
 from datetime import datetime, timedelta
 
-# ТЕПЕРЬ ИМЕНА ТОЧНО КАК НА СКРИНШОТЕ
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("CHANNEL_ID")
 
 async def send_tg(text):
-    if not TOKEN or not CHAT_ID:
-        print("❌ ОШИБКА: Переменные не найдены в Railway!", flush=True)
-        return
     url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
     async with aiohttp.ClientSession() as session:
         payload = {"chat_id": CHAT_ID, "text": text, "parse_mode": "HTML"}
-        async with session.post(url, json=payload) as r:
-            return await r.json()
+        await session.post(url, json=payload)
 
-async def check_league(session, ids):
-    for mid in ids[:5]: # Проверяем до 5 матчей для надежности
+async def check_league_detailed(session, ids):
+    has_shots = False
+    has_any_penalty = False
+    
+    for mid in ids[:8]: # Проверяем больше матчей для верности
         try:
             url = f"https://api.sofascore.com/api/v1/event/{mid}/statistics"
             async with session.get(url, timeout=7) as r:
                 if r.status != 200: continue
                 data = await r.json()
-                target = next((p for p in data.get('statistics', []) if p.get('period') == 'ALL'), None)
+                stats = data.get('statistics', [])
+                target = next((p for p in stats if p.get('period') == 'ALL'), None)
                 if not target: continue
                 
-                has_s, has_p = False, False
                 for group in target.get('groups', []):
                     for item in group.get('statisticsItems', []):
                         key = str(item.get('key', '')).lower()
-                        # Наша "собака": Shots или ShotsOnGoal
-                        if key in ['shots', 'shotsongoal']: has_s = True
-                        # Штрафные минуты
-                        if 'penalty' in key: has_p = True
+                        # Расширенный поиск бросков
+                        if 'shot' in key: has_shots = True
+                        # Расширенный поиск любых штрафов
+                        if 'penalt' in key or 'suspended' in key: has_any_penalty = True
                 
-                if has_s and has_p: return True
+                if has_shots: break # Если нашли хоть броски, уже интересно
         except: continue
-    return False
+    return has_shots, has_any_penalty
 
 async def main():
-    print("--- 🛰 ЗАПУСК v156.0 (ПОД ТВОИ ПЕРЕМЕННЫЕ) ---", flush=True)
-    
-    # Сразу проверяем связь
-    print(f"DEBUG: Использую TOKEN: {TOKEN[:5]}*** и ID: {CHAT_ID}", flush=True)
-    await send_tg("🚀 <b>Связь установлена!</b> Начинаю фильтрацию лиг...")
+    print("--- 🛰 ЗАПУСК v157.0 (ГИБКИЙ ПОИСК) ---", flush=True)
+    await send_tg("🔍 <b>Начинаю поиск...</b> Проверяю расширенную статистику за 3 дня.")
 
     headers = {"User-Agent": "Mozilla/5.0"}
-    white_list = set()
+    found_leagues = {} # Имя: статус
     days = [(datetime.now() - timedelta(days=i)).strftime('%Y-%m-%d') for i in range(3)]
 
     async with aiohttp.ClientSession(headers=headers) as session:
         for date in days:
-            print(f"📅 Проверка: {date}", flush=True)
+            print(f"📅 Дата: {date}", flush=True)
             try:
                 url = f"https://api.sofascore.com/api/v1/sport/ice-hockey/scheduled-events/{date}"
                 async with session.get(url, timeout=15) as r:
@@ -66,19 +61,23 @@ async def main():
                         leagues[n].append(ev.get('id'))
                     
                     for l_name, ids in leagues.items():
-                        if l_name in white_list: continue
-                        if await check_league(session, ids):
-                            white_list.add(l_name)
-                            print(f"✅ Найдена: {l_name}", flush=True)
+                        if l_name in found_leagues: continue
+                        s, p = await check_league_detailed(session, ids)
+                        if s: # Если есть хотя бы броски
+                            status = "🎯 Броски + ⏳ Штрафы" if p else "🎯 Только броски"
+                            found_leagues[l_name] = status
+                            print(f"✅ Найдена: {l_name} ({status})", flush=True)
                         await asyncio.sleep(0.1)
             except: continue
 
-    if white_list:
-        res_text = "<b>📊 БЕЛЫЙ СПИСОК ЛИГ:</b>\n\n" + "\n".join([f"• <code>{l}</code>" for l in sorted(white_list)])
+    if found_leagues:
+        msg = "<b>✅ НАЙДЕНЫ ЛИГИ СО СТАТОЙ:</b>\n\n"
+        for l, stat in sorted(found_leagues.items()):
+            msg += f"• <code>{l}</code>\n  └ {stat}\n\n"
     else:
-        res_text = "⚠️ За 3 дня лиг со статистикой не найдено."
+        msg = "⚠️ Даже с гибким поиском ничего не найдено. Возможно, API SofaScore временно не отдает статистику в архив."
     
-    await send_tg(res_text)
+    await send_tg(msg)
     print("🏁 Готово!", flush=True)
 
 if __name__ == "__main__":
