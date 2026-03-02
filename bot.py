@@ -1,32 +1,34 @@
-async def get_stats_with_curl(session, mid):
+async def get_stats_with_curl(session, mid, is_break):
     try:
-        # ШАГ 1: "Открываем" матч, чтобы сервер разрешил забрать статику
-        main_url = f"https://www.flashscore.ru/match/{mid}/#/match-summary/match-statistics/0"
-        await session.get(main_url, impersonate="chrome110", timeout=10)
+        # 1. Сначала пробуем специфический фид для 1-го ПЕРИОДА
+        url_period = f"https://www.flashscore.ru/x/feed/df_st_1_{mid}"
+        # 2. Параллельно имеем в виду фид ОБЩЕЙ статы (на всякий случай)
+        url_all = f"https://www.flashscore.ru/x/feed/df_st_0_{mid}"
         
-        # ШАГ 2: Теперь запрашиваем сами цифры
-        url = f"https://www.flashscore.ru/x/feed/df_st_1_{mid}"
+        target_url = url_period if is_break else url_all
+        
         headers = {
             "x-fsign": "SW9D1eZo",
-            "referer": main_url, # Обязательно ссылаемся на страницу матча
+            "referer": f"https://www.flashscore.ru/match/{mid}/",
             "x-requested-with": "XMLHttpRequest"
         }
         
-        r = await session.get(url, headers=headers, impersonate="chrome110", timeout=10)
-        content = r.text
+        r = await session.get(target_url, headers=headers, impersonate="chrome110", timeout=10)
         
-        # Если в ответе нет '158' (код бросков), значит данных еще нет на сайте
-        if '158' not in content and '2' not in content:
-            return 0, 0
-            
+        # Если фид периода пустой, пробуем общий фид
+        if '158' not in r.text and is_break:
+             r = await session.get(url_all, headers=headers, impersonate="chrome110", timeout=10)
+
+        content = r.text
         sh, pn = 0, 0
         for s in content.split('~'):
-            if '158' in s: # Броски
-                res = re.findall(r'(\d+)', s)
-                if len(res) >= 2: sh = int(res[-2]) + int(res[-1])
-            if '2' in s and 'PN' in s: # Штрафы
-                res = re.findall(r'(\d+)', s)
-                if len(res) >= 2: pn = int(res[-2]) + int(res[-1])
+            if '158' in s:
+                v = re.findall(r'(\d+)', s)
+                if len(v) >= 2: sh = int(v[-2]) + int(v[-1])
+            if '2' in s and 'PN' in s:
+                v = re.findall(r'(\d+)', s)
+                if len(v) >= 2: pn = int(v[-2]) + int(v[-1])
+        
         return sh, pn
     except:
         return 0, 0
