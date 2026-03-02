@@ -2,7 +2,7 @@ import asyncio
 import aiohttp
 from datetime import datetime, timedelta
 
-# --- НАСТРОЙКИ ТГ ---
+# --- НАСТРОЙКИ ---
 TOKEN = "ТВОЙ_ТОКЕН"
 CHAT_ID = "ТВОЙ_CHAT_ID"
 
@@ -10,74 +10,84 @@ async def send_tg(text):
     url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
     async with aiohttp.ClientSession() as session:
         payload = {"chat_id": CHAT_ID, "text": text, "parse_mode": "HTML"}
-        await session.post(url, json=payload)
+        try:
+            await session.post(url, json=payload, timeout=10)
+        except: pass
 
-async def validate_league_stats(session, event_ids):
-    """Проверяет матчи лиги. Нужно чтобы и удары, и штрафы были > 0"""
-    for mid in event_ids[:3]: # Проверяем до 3-х матчей для надежности
+async def check_league(session, event_ids):
+    # Проверяем первые 3 игры лиги. Если хотя бы в одной есть стата — лига годна.
+    for mid in event_ids[:3]:
         try:
             url = f"https://api.sofascore.com/api/v1/event/{mid}/statistics"
             async with session.get(url, timeout=5) as r:
                 if r.status != 200: continue
                 data = await r.json()
-                periods = data.get('statistics', [])
-                if not periods: continue
+                # Ищем блок 'ALL' (итог матча)
+                target = next((p for p in data.get('statistics', []) if p.get('period') == 'ALL'), None)
+                if not target: continue
                 
-                target = next((p for p in periods if p.get('period') == 'ALL'), periods[0])
-                has_s, has_p = False, False
+                has_shots = False
+                has_penalty = False
                 
                 for group in target.get('groups', []):
                     for item in group.get('statisticsItems', []):
                         key = str(item.get('key', '')).lower()
                         name = str(item.get('name', '')).lower()
                         
-                        # Ищем те самые ключи, что мы "прижали" ранее
-                        if key == 'shots' or key == 'shotsongoal' or 'створ' in name:
-                            has_s = True
+                        # Наша "собака": Shots, shotsongoal или "створ"
+                        if key in ['shots', 'shotsongoal'] or 'створ' in name:
+                            has_shots = True
+                        # Штрафы
                         if 'penalty' in key or 'штраф' in name:
-                            has_p = True
+                            has_penalty = True
                 
-                if has_s and has_p: return True # Лига прошла проверку
+                if has_shots and has_penalty: return True
         except: continue
     return False
 
 async def main():
-    headers = {"User-Agent": "Mozilla/5.0"}
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
     white_list = set()
+    # Берем 3 дня для анализа
     days = [(datetime.now() - timedelta(days=i)).strftime('%Y-%m-%d') for i in range(3)]
 
     async with aiohttp.ClientSession(headers=headers) as session:
-        await send_tg("🛠 <b>Запуск фильтрации...</b>\nАнализирую лиги за 3 дня на наличие ударов и штрафов.")
+        print("🚀 Начинаю фильтрацию лиг...", flush=True)
         
         for date in days:
-            url = f"https://api.sofascore.com/api/v1/sport/ice-hockey/scheduled-events/{date}"
-            async with session.get(url) as r:
-                if r.status != 200: continue
-                events = (await r.json()).get('events', [])
-                
-                # Группируем матчи по лигам
-                leagues_map = {}
-                for ev in events:
-                    l_full = ev.get('tournament', {}).get('name', '')
-                    if l_full not in leagues_map: leagues_map[l_full] = []
-                    leagues_map[l_full].append(ev.get('id'))
+            try:
+                url = f"https://api.sofascore.com/api/v1/sport/ice-hockey/scheduled-events/{date}"
+                async with session.get(url, timeout=10) as r:
+                    if r.status != 200: continue
+                    events = (await r.json()).get('events', [])
+                    
+                    # Группируем по лигам
+                    leagues = {}
+                    for ev in events:
+                        name = ev.get('tournament', {}).get('name', 'Unknown')
+                        if name not in leagues: leagues[name] = []
+                        leagues[name].append(ev.get('id'))
+                    
+                    for l_name, ids in leagues.items():
+                        if l_name in white_list: continue
+                        # Бот сам проверяет и фильтрует
+                        if await check_league(session, ids):
+                            white_list.add(l_name)
+                            print(f"✅ Найдена живая лига: {l_name}", flush=True)
+                        await asyncio.sleep(0.2) # Анти-спам
+            except: continue
 
-                # Фильтруем каждую лигу
-                for l_name, ids in leagues_map.items():
-                    if l_name in white_list: continue
-                    if await validate_league_stats(session, ids):
-                        white_list.add(l_name)
-                    await asyncio.sleep(0.3) # Чтобы Railway не забанили
-
+        # Финальный аккорд: отправка только чистого списка
         if white_list:
-            # Формируем список в столбик для удобного копирования
-            msg = "<b>✅ ПОЛНЫЙ БЕЛЫЙ СПИСОК:</b>\n\n"
-            msg += "\n".join([f"<code>{l}</code>" for l in sorted(white_list)])
-            msg += f"\n\n<i>Всего: {len(white_list)} лиг со статистикой.</i>"
+            sorted_list = sorted(list(white_list))
+            msg = "<b>🏆 АВТО-ФИЛЬТР: БЕЛЫЙ СПИСОК</b>\n<i>(Лиги с ударами и штрафами за 72ч)</i>\n\n"
+            msg += "\n".join([f"• <code>{l}</code>" for l in sorted_list])
+            msg += f"\n\n<b>Всего: {len(sorted_list)}</b>"
         else:
-            msg = "❌ Лиг с полной статистикой не обнаружено."
+            msg = "❌ Лиг со статистикой не найдено."
         
         await send_tg(msg)
+        print("🏁 Работа завершена, отчет отправлен.", flush=True)
 
 if __name__ == "__main__":
     asyncio.run(main())
