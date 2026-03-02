@@ -1,9 +1,3 @@
-import asyncio
-import aiohttp
-
-# Твои лиги
-LEAGUES = ['KHL', 'КХЛ', 'NHL', 'НХЛ', 'AHL', 'АХЛ']
-
 async def get_stats(session, mid):
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
@@ -12,52 +6,38 @@ async def get_stats(session, mid):
     }
     try:
         url = f"https://api.sofascore.com/api/v1/event/{mid}/statistics"
-        async with session.get(url, headers=headers, timeout=5) as r:
+        async with session.get(url, headers=headers, timeout=7) as r:
             if r.status != 200: return 0, 0
             data = await r.json()
-            sh, pn = 0, 0
+            stats_list = data.get('statistics', [])
+            if not stats_list: return 0, 0
             
-            for p in data.get('statistics', []):
-                if p.get('period') == 'ALL':
-                    for g in p.get('groups', []):
-                        for i in g.get('statisticsItems', []):
-                            name = i.get('name', '').lower()
-                            
-                            # Универсальный тягач цифр
-                            def val(side):
-                                v = i.get(f'{side}Value') or i.get(side) or '0'
-                                return int(str(v).split('(')[0].replace('%','').strip())
-
-                            if any(x in name for x in ['shots on goal', 'shots on target', 'удары в створ']):
-                                sh = val('home') + val('away')
-                            if 'penalty' in name or 'штраф' in name:
-                                pn = val('home') + val('away')
-            return sh, pn
-    except: return 0, 0
-
-async def main():
-    print("--- 🚀 v137.0: ЧИСТЫЙ ХОККЕЙ ---", flush=True)
-    async with aiohttp.ClientSession() as session:
-        while True:
-            try:
-                async with session.get("https://api.sofascore.com/api/v1/sport/ice-hockey/events/live", timeout=10) as r:
-                    if r.status != 200: continue
-                    events = (await r.json()).get('events', [])
+            # 1. Сначала ищем блок 'ALL'. Если его нет - берем самый первый доступный блок
+            target_block = next((p for p in stats_list if p.get('period') == 'ALL'), stats_list[0])
+            
+            sh, pn = 0, 0
+            for group in target_block.get('groups', []):
+                for item in group.get('statisticsItems', []):
+                    name = item.get('name', '').lower()
                     
-                    for ev in events:
-                        l_name = ev.get('tournament', {}).get('name', '')
-                        if not any(t in l_name.upper() for t in LEAGUES): continue
-                        
-                        mid = ev.get('id')
-                        home = ev['homeTeam']['shortName']
-                        away = ev['awayTeam']['shortName']
-                        score = f"{ev['homeScore'].get('current',0)}-{ev['awayScore'].get('current',0)}"
-                        status = ev['status']['description']
-                        
-                        sh, pn = await get_stats(session, mid)
-                        print(f"🏒 {home} {score} {away} | {status} | Броски: {sh} | Штраф: {pn}", flush=True)
-            except: pass
-            await asyncio.sleep(40)
+                    # Функция вытягивания цифр (теперь еще надежнее)
+                    def extract(side):
+                        # Проверяем все возможные ключи SofaScore
+                        val = item.get(f'{side}Value') or item.get(side) or item.get(f'{side}Total') or '0'
+                        try:
+                            return int(str(val).split('(')[0].replace('%','').strip())
+                        except: return 0
 
-if __name__ == "__main__":
-    asyncio.run(main())
+                    # 🏒 БРОСКИ (Shots on goal / Shots on target / Броски)
+                    if any(x in name for x in ['shot', 'target', 'створ', 'броски']):
+                        # Исключаем 'blocked shots' (блокированные), нам нужны только в створ
+                        if 'block' not in name:
+                            sh = extract('home') + extract('away')
+                    
+                    # ⏳ ШТРАФ (Penalty minutes / Suspensions / Штраф)
+                    if any(x in name for x in ['penalty', 'штраф', 'suspension', 'мин']):
+                        pn = extract('home') + extract('away')
+            
+            return sh, pn
+    except Exception as e:
+        return 0, 0
