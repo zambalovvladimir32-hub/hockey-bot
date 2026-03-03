@@ -2,11 +2,9 @@ import asyncio
 from playwright.async_api import async_playwright
 
 async def main():
-    print("--- 🚜 ЗАВОДИМ ТЯЖЕЛУЮ АРТИЛЛЕРИЮ (НАТИВНЫЙ СТЕЛС) ---", flush=True)
+    print("--- 🚜 ТЯЖЕЛАЯ АРТИЛЛЕРИЯ: ШАГ 2 (ЧИТАЕМ СТАТУ) ---", flush=True)
     
     async with async_playwright() as p:
-        print("⏳ Запуск Chromium...", flush=True)
-        
         browser = await p.chromium.launch(
             headless=True, 
             args=[
@@ -14,7 +12,7 @@ async def main():
                 '--disable-setuid-sandbox',
                 '--disable-dev-shm-usage',
                 '--disable-gpu',
-                '--disable-blink-features=AutomationControlled' # Скрываем флаг робота
+                '--disable-blink-features=AutomationControlled'
             ]
         )
         
@@ -24,31 +22,47 @@ async def main():
         )
         
         page = await context.new_page()
-        
-        # МАГИЯ ЗДЕСЬ: Нативный скрипт-невидимка вместо сломанной библиотеки
         await page.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
         
-        print("🌍 Заходим на сайт Flashscore...", flush=True)
         try:
+            print("1️⃣ Идем на главную за списком матчей...", flush=True)
             await page.goto("https://www.flashscore.com/hockey/", timeout=60000)
-            
-            print("⏳ Ждем прогрузки матчей...", flush=True)
             await page.wait_for_selector(".event__match", timeout=20000)
             
-            matches = await page.locator(".event__match").all()
-            print(f"\n✅ УСПЕХ! Пробили Cloudflare. Найдено матчей: {len(matches)}", flush=True)
+            # Берем САМЫЙ ПЕРВЫЙ матч из лайва
+            first_match = page.locator(".event__match").first
             
-            for i, match in enumerate(matches[:5]): 
-                home = await match.locator(".event__participant--home").inner_text()
-                away = await match.locator(".event__participant--away").inner_text()
-                score_home = await match.locator(".event__score--home").inner_text()
-                score_away = await match.locator(".event__score--away").inner_text()
-                print(f" 🏒 {home} [{score_home}:{score_away}] {away}", flush=True)
-                
+            # Вытаскиваем его ID (он лежит в атрибуте id, выглядит как "g_4_XXXXXXX")
+            match_id_raw = await first_match.get_attribute("id")
+            match_id = match_id_raw.split("_")[-1] # Отрезаем "g_4_" и получаем чистый ID
+            
+            home = await first_match.locator(".event__participant--home").inner_text()
+            away = await first_match.locator(".event__participant--away").inner_text()
+            
+            print(f"✅ Взят матч: {home} - {away} (ID: {match_id})", flush=True)
+            
+            # Формируем прямую ссылку на вкладку статистики
+            stats_url = f"https://www.flashscore.com/match/{match_id}/#/match-summary/match-statistics/0"
+            print(f"2️⃣ Прыгаем на вкладку статистики: {stats_url}", flush=True)
+            
+            await page.goto(stats_url, timeout=30000)
+            
+            # Даем странице 3 секунды, чтобы прогрузить графики и цифры
+            await page.wait_for_timeout(3000)
+            
+            # Собираем ВЕСЬ текст из блока статистики, чтобы найти броски
+            print("⏳ Ищу данные на странице...", flush=True)
+            
+            # Обычно вся стата лежит в контейнере #detail
+            stats_text = await page.locator("#detail").inner_text()
+            
+            print("\n🔥🔥🔥 БИНГО! ВОТ ЧТО МЫ НАШЛИ НА ВКЛАДКЕ СТАТИСТИКИ:")
+            print("--------------------------------------------------")
+            print(stats_text)
+            print("--------------------------------------------------")
+            
         except Exception as e:
-            print(f"❌ Ошибка загрузки: {e}", flush=True)
-            html = await page.content()
-            print(f"🔍 Кусок HTML: {html[:300]}", flush=True)
+            print(f"❌ Ошибка: {e}", flush=True)
             
         finally:
             await browser.close()
