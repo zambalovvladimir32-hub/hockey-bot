@@ -1,38 +1,30 @@
 import asyncio
 import aiohttp
 import os
-import json
-import google.generativeai as genai
+from google import genai
 
+# Инициализация нового клиента API (без варнингов)
+client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("CHANNEL_ID")
-genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
-model = genai.GenerativeModel('gemini-1.5-flash')
 
 WHITE_LIST = ["KHL", "NHL", "SHL", "Liiga", "DEL", "Extraliga", "VHL"]
 SENT_SIGNALS = set()
 
-async def ai_partner_decision(home, away, score, s_map):
-    """ИИ анализирует, стоит ли заходить, если стата 'плавает' около 13"""
-    on_goal = s_map.get('on_goal', 0)
-    total = on_goal + s_map.get('blocked', 0) + s_map.get('wide', 0)
+async def ai_decision(home, away, score, s_map):
+    """ИИ как финальный судья: подтверждает вход при 'плавающей' стате"""
+    on_g = s_map.get('on_goal', 0)
+    total = on_g + s_map.get('blocked', 0) + s_map.get('wide', 0)
     
-    prompt = f"""
-    Матч {home}-{away}, Счет P1 {score}. 
-    Броски в створ: {on_goal}. Всего попыток (вкл. блоки и мимо): {total}.
-    Штрафы: {s_map.get('penalties', 0)} мин.
+    prompt = f"Матч {home}-{away}, P1 {score}. В створ {on_g}, блоки {s_map.get('blocked', 0)}, мимо {s_map.get('wide', 0)}. Штраф {s_map.get('penalties', 0)} мин. Если общее давление >17 — пиши 'ЗАХОДИМ', иначе 'НЕТ'."
     
-    ЗАДАЧА:
-    Если бросков в створ 11-12, но общая активность высокая (>17 попыток) и есть штрафы — это СИГНАЛ.
-    Ответь строго: ВЕРДИКТ [ЗАХОДИМ/НЕТ] и почему.
-    """
     try:
-        response = model.generate_content(prompt)
+        response = client.models.generate_content(model="gemini-1.5-flash", contents=prompt)
         return response.text
-    except: return "ВЕРДИКТ [ЗАХОДИМ]"
+    except: return "ЗАХОДИМ"
 
 async def main():
-    print("--- 🚀 v173.0: ФИНАЛЬНАЯ СИНЕРГИЯ ЗАПУЩЕНА ---", flush=True)
+    print("--- ⚔️ v174.0: СИСТЕМА ПЕРЕЗАПУЩЕНА (НОВЫЙ КЛИЕНТ) ---", flush=True)
 
     async with aiohttp.ClientSession(headers={"User-Agent": "Mozilla/5.0"}) as session:
         while True:
@@ -44,7 +36,6 @@ async def main():
                 for ev in events:
                     mid = ev.get('id')
                     if mid in SENT_SIGNALS or ev.get('status', {}).get('code') != 31: continue
-                    
                     if not any(t.upper() in ev.get('tournament', {}).get('name', '').upper() for t in WHITE_LIST): continue
 
                     h_p1, a_p1 = ev.get('homeScore', {}).get('period1', 0), ev.get('awayScore', {}).get('period1', 0)
@@ -59,7 +50,7 @@ async def main():
                         s_map = {}
                         for g in p1.get('groups', []):
                             for i in g.get('statisticsItems', []):
-                                key, h, a = i['key'], int(i.get('homeValue',0)), int(i.get('awayValue',0))
+                                key, h, a = i['key'], int(i.get('homeValue', 0)), int(i.get('awayValue', 0))
                                 if key == 'shotsOnGoal': s_map['on_goal'] = h + a
                                 if key == 'blockedShots': s_map['blocked'] = h + a
                                 if key == 'shotsWide': s_map['wide'] = h + a
@@ -69,21 +60,20 @@ async def main():
                         pens = s_map.get('penalties', 0)
                         total_att = on_g + s_map.get('blocked', 0) + s_map.get('wide', 0)
 
-                        # ГИБКИЙ ПОРОГ ПОД ТВОИ СКРИНЫ:
-                        # Если 13+ — летим сразу. 
-                        # Если 11-12 (как у Амура), но общее давление есть — зовем ИИ.
-                        if (on_g >= 13 or (on_g >= 11 and total_att >= 18)) and pens >= 2:
+                        # ЛОГИКА ПОД ТВОИ СКРИНЫ: 
+                        # Если 13+ — летим сразу. Если 10-12, но по факту долбили много (блоки + мимо) — зовем ИИ.
+                        if (on_g >= 13 or (on_g >= 10 and total_att >= 17)) and pens >= 2:
                             home, away = ev['homeTeam']['shortName'], ev['awayTeam']['shortName']
-                            verdict = await ai_partner_decision(home, away, f"{h_p1}:{a_p1}", s_map)
+                            verdict = await ai_decision(home, away, f"{h_p1}:{a_p1}", s_map)
                             
                             if "ЗАХОДИМ" in verdict.upper():
                                 msg = (
-                                    f"🔥 <b>СИГНАЛ: {home} — {away}</b>\n"
+                                    f"🚨 <b>СИГНАЛ: {home} — {away}</b>\n"
                                     f"🥅 Счет P1: <b>{h_p1}:{a_p1}</b>\n"
                                     f"🎯 В створ: <b>{on_g}</b> | ⏳ Штраф: <b>{pens}м</b>\n"
-                                    f"🏒 Всего попыток: <b>{total_att}</b>\n"
+                                    f"🏒 Общая активность: <b>{total_att}</b>\n"
                                     f"━━━━━━━━━━━━━━━━━━\n"
-                                    f"🧠 <b>AI:</b> {verdict.strip()}"
+                                    f"🤖 <b>AI ВЕРДИКТ:</b> {verdict.strip()}"
                                 )
                                 await session.post(f"https://api.telegram.org/bot{TOKEN}/sendMessage", 
                                                  json={"chat_id": CHAT_ID, "text": msg, "parse_mode": "HTML"})
