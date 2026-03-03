@@ -28,7 +28,7 @@ async def send_tg(session, text):
         print(f"Ошибка ТГ: {e}")
 
 async def main():
-    print("--- 🎯 v184.0: СНАЙПЕР (ТОЛЬКО ТБ 0.5) ЗАПУЩЕН ---", flush=True)
+    print("--- 🎯 v185.0: СНАЙПЕР (АДАПТИВНЫЕ БРОСКИ) ЗАПУЩЕН ---", flush=True)
     
     async with aiohttp.ClientSession(headers={"User-Agent": "Mozilla/5.0"}) as session:
         while True:
@@ -51,7 +51,6 @@ async def main():
                             p2_goals = h_p2 + a_p2
                             info = PENDING_REPORTS[mid]
                             
-                            # Оставили только одну проверку — был ли гол
                             if p2_goals >= 1:
                                 result_text = "✅ <b>ЗАШЛО</b>"
                             else:
@@ -107,13 +106,17 @@ async def main():
                                                     if any(x in key_raw or x in name_raw for x in ['penalty', 'penalties', 'штраф', 'удалени']):
                                                         pens = val
 
-                                            if on_g >= 12 and pens >= 2:
+                                            # НОВАЯ ЛОГИКА: Если бросков >= 12 ИЛИ их нет вообще (0), но штраф >= 2
+                                            if (on_g >= 12 or on_g == 0) and pens >= 2:
+                                                # Красивый вывод для телеги, если статы бросков нет
+                                                shots_display = str(on_g) if on_g > 0 else "Нет данных 🙈"
+                                                
                                                 msg = (f"🚨 <b>АЛГОРИТМ: ИДЕАЛЬНЫЙ МАТЧ</b>\n"
                                                        f"🏆 {l_name}\n"
                                                        f"🤝 <b>{h_name} — {a_name}</b>\n"
                                                        f"━━━━━━━━━━━━━━━━━━\n"
                                                        f"🥅 Счет P1: <b>{h_p1}:{a_p1}</b>\n"
-                                                       f"🎯 Броски в створ: <b>{on_g}</b>\n"
+                                                       f"🎯 Броски в створ: <b>{shots_display}</b>\n"
                                                        f"⏳ Штрафы: <b>{pens} мин</b>\n"
                                                        f"━━━━━━━━━━━━━━━━━━\n"
                                                        f"💡 <i>Ждем минимум 1 гол во 2-м периоде.</i>")
