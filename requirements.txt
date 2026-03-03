@@ -1,3 +1,3 @@
 aiohttp
-google-genai
+google-generativeai
 redis
