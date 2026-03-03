@@ -12,24 +12,27 @@ model = genai.GenerativeModel('gemini-1.5-flash')
 WHITE_LIST = ["KHL", "NHL", "SHL", "Liiga", "DEL", "Extraliga", "VHL"]
 SENT_SIGNALS = set()
 
-async def ai_check(home, away, score, s_map, bundle):
-    """ИИ рыщет в данных и спасает матчи, где SofaScore занизила статику"""
+async def ai_partner_decision(home, away, score, s_map):
+    """ИИ анализирует, стоит ли заходить, если стата 'плавает' около 13"""
+    on_goal = s_map.get('on_goal', 0)
+    total = on_goal + s_map.get('blocked', 0) + s_map.get('wide', 0)
+    
     prompt = f"""
     Матч {home}-{away}, Счет P1 {score}. 
-    SofaScore показывает {s_map.get('on_goal', 0)} бросков в створ. 
-    НО МЫ ВИДИМ: Блокировано {s_map.get('blocked', 0)}, Мимо {s_map.get('wide', 0)}.
+    Броски в створ: {on_goal}. Всего попыток (вкл. блоки и мимо): {total}.
     Штрафы: {s_map.get('penalties', 0)} мин.
     
-    Твоя задача: Если бросков в створ чуть меньше 13 (как сейчас {s_map.get('on_goal', 0)}), но общее давление (створ+блоки+мимо) > 18 — это СИГНАЛ.
-    Ответишь только: ВЕРДИКТ [ДА/НЕТ] и коротко почему.
+    ЗАДАЧА:
+    Если бросков в створ 11-12, но общая активность высокая (>17 попыток) и есть штрафы — это СИГНАЛ.
+    Ответь строго: ВЕРДИКТ [ЗАХОДИМ/НЕТ] и почему.
     """
     try:
         response = model.generate_content(prompt)
         return response.text
-    except: return "ВЕРДИКТ [ДА]"
+    except: return "ВЕРДИКТ [ЗАХОДИМ]"
 
 async def main():
-    print("--- 🚀 v172.0: ЗАЩИТА ОТ КОРРЕКЦИИ ДАННЫХ ЗАПУЩЕНА ---", flush=True)
+    print("--- 🚀 v173.0: ФИНАЛЬНАЯ СИНЕРГИЯ ЗАПУЩЕНА ---", flush=True)
 
     async with aiohttp.ClientSession(headers={"User-Agent": "Mozilla/5.0"}) as session:
         while True:
@@ -56,39 +59,38 @@ async def main():
                         s_map = {}
                         for g in p1.get('groups', []):
                             for i in g.get('statisticsItems', []):
-                                key = i['key']
-                                val = int(i.get('homeValue',0)) + int(i.get('awayValue',0))
-                                if key == 'shotsOnGoal': s_map['on_goal'] = val
-                                if key == 'blockedShots': s_map['blocked'] = val
-                                if key == 'shotsWide': s_map['wide'] = val
-                                if key in ['penaltyMinutes', 'penalties']: s_map['penalties'] = val
+                                key, h, a = i['key'], int(i.get('homeValue',0)), int(i.get('awayValue',0))
+                                if key == 'shotsOnGoal': s_map['on_goal'] = h + a
+                                if key == 'blockedShots': s_map['blocked'] = h + a
+                                if key == 'shotsWide': s_map['wide'] = h + a
+                                if key in ['penaltyMinutes', 'penalties']: s_map['penalties'] = h + a
 
-                        shots = s_map.get('on_goal', 0)
+                        on_g = s_map.get('on_goal', 0)
                         pens = s_map.get('penalties', 0)
-                        total_att = shots + s_map.get('blocked', 0) + s_map.get('wide', 0)
+                        total_att = on_g + s_map.get('blocked', 0) + s_map.get('wide', 0)
 
-                        # ТЕПЕРЬ МЫ НЕ ПРОПУСТИМ ТАКИЕ МАТЧИ:
-                        # Если 13+ — заходим сразу. 
-                        # Если 10-12 (как в твоем примере), но общих попыток много — зовем ИИ на помощь.
-                        if (shots >= 13 or (shots >= 10 and total_att >= 17)) and pens >= 2:
+                        # ГИБКИЙ ПОРОГ ПОД ТВОИ СКРИНЫ:
+                        # Если 13+ — летим сразу. 
+                        # Если 11-12 (как у Амура), но общее давление есть — зовем ИИ.
+                        if (on_g >= 13 or (on_g >= 11 and total_att >= 18)) and pens >= 2:
                             home, away = ev['homeTeam']['shortName'], ev['awayTeam']['shortName']
-                            analysis = await ai_check(home, away, f"{h_p1}:{a_p1}", s_map, st_data)
+                            verdict = await ai_partner_decision(home, away, f"{h_p1}:{a_p1}", s_map)
                             
-                            if "ДА" in analysis.upper():
+                            if "ЗАХОДИМ" in verdict.upper():
                                 msg = (
-                                    f"🚨 <b>СИГНАЛ: {home} — {away}</b>\n"
+                                    f"🔥 <b>СИГНАЛ: {home} — {away}</b>\n"
                                     f"🥅 Счет P1: <b>{h_p1}:{a_p1}</b>\n"
-                                    f"🎯 В створ: <b>{shots}</b> | ⏳ Штраф: <b>{pens}м</b>\n"
-                                    f"🔥 Активность: <b>{total_att}</b> попыток\n"
+                                    f"🎯 В створ: <b>{on_g}</b> | ⏳ Штраф: <b>{pens}м</b>\n"
+                                    f"🏒 Всего попыток: <b>{total_att}</b>\n"
                                     f"━━━━━━━━━━━━━━━━━━\n"
-                                    f"🧠 <b>AI РЫТЬЁ:</b> {analysis.strip()}"
+                                    f"🧠 <b>AI:</b> {verdict.strip()}"
                                 )
                                 await session.post(f"https://api.telegram.org/bot{TOKEN}/sendMessage", 
                                                  json={"chat_id": CHAT_ID, "text": msg, "parse_mode": "HTML"})
                                 SENT_SIGNALS.add(mid)
 
             except Exception as e: print(f"Error: {e}")
-            await asyncio.sleep(25)
+            await asyncio.sleep(20)
 
 if __name__ == "__main__":
     asyncio.run(main())
