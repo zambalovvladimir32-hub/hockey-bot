@@ -1,65 +1,48 @@
 import asyncio
-import aiohttp
-import json
+from playwright.async_api import async_playwright
 
 async def main():
-    print("--- 🕵️‍♂️ ВЗЛОМ LIVESCORE: ПОДБИРАЕМ КЛЮЧИ V2 (REACT) ---", flush=True)
+    print("--- 🚜 ЗАВОДИМ ТЯЖЕЛУЮ АРТИЛЛЕРИЮ (PLAYWRIGHT) ---", flush=True)
     
-    url_live = "https://prod-public-api.livescore.com/v1/api/react/live/hockey/3.00"
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-        "Accept": "application/json",
-        "Origin": "https://www.livescore.com",
-        "Referer": "https://www.livescore.com/"
-    }
-
-    async with aiohttp.ClientSession(headers=headers) as session:
-        print("1️⃣ Ищем матч в лайве...", flush=True)
+    # Запускаем невидимый браузер
+    async with async_playwright() as p:
+        print("⏳ Запуск Chromium...")
+        # args=['--no-sandbox'] нужен для работы внутри серверов типа Railway
+        browser = await p.chromium.launch(headless=True, args=['--no-sandbox', '--disable-setuid-sandbox'])
+        page = await browser.new_page()
+        
+        print("🌍 Заходим на сайт Flashscore...", flush=True)
         try:
-            async with session.get(url_live, timeout=10) as r:
-                data = await r.json()
-                match_id = None
+            # Идем прямо на хоккейный лайв
+            await page.goto("https://www.flashscore.com/hockey/", timeout=30000)
+            
+            # Ждем, пока загрузятся элементы матчей (Cloudflare обычно пропускает Playwright)
+            print("⏳ Ждем прогрузки матчей...", flush=True)
+            await page.wait_for_selector(".event__match", timeout=15000)
+            
+            # Собираем названия команд, которые сейчас играют
+            matches = await page.locator(".event__match").all()
+            print(f"\n✅ УСПЕХ! Пробили защиту. Найдено матчей на странице: {len(matches)}")
+            
+            for i, match in enumerate(matches[:5]): # Выведем первые 5 для проверки
+                home = await match.locator(".event__participant--home").inner_text()
+                away = await match.locator(".event__participant--away").inner_text()
+                score_home = await match.locator(".event__score--home").inner_text()
+                score_away = await match.locator(".event__score--away").inner_text()
+                print(f" 🏒 {home} [{score_home}:{score_away}] {away}")
                 
-                for stage in data.get('Stages', []):
-                    for ev in stage.get('Events', []):
-                        match_id = ev.get('Eid')
-                        h_name = ev.get('T1', [{}])[0].get('Nm', 'Home')
-                        a_name = ev.get('T2', [{}])[0].get('Nm', 'Away')
-                        break
-                    if match_id: break
-                
-                if not match_id:
-                    print("🤷‍♂️ Нет матчей в лайве для проверки.")
-                    return
-                
-                print(f"✅ Взят матч: {h_name} - {a_name} (ID: {match_id})\n")
-                
-                # Новая связка ключей (React API)
-                endpoints = [
-                    f"https://prod-public-api.livescore.com/v1/api/react/match/hockey/{match_id}/3.00",
-                    f"https://prod-public-api.livescore.com/v1/api/react/detail/hockey/{match_id}/3.00",
-                    f"https://prod-public-api.livescore.com/v1/api/react/statistics/hockey/{match_id}/3.00",
-                    f"https://prod-public-api.livescore.com/v1/api/react/match-stats/hockey/{match_id}/3.00"
-                ]
-
-                for idx, url in enumerate(endpoints, 1):
-                    print(f"🔑 Пробуем ключ #{idx}...")
-                    async with session.get(url, timeout=10) as rd:
-                        print(f"   📡 Статус: {rd.status}")
-                        if rd.status == 200:
-                            print("\n🔥🔥🔥 БИНГО! МЫ ВЗЛОМАЛИ ДВЕРЬ!")
-                            print(f"Рабочая ссылка: {url}")
-                            detail_data = await rd.json()
-                            
-                            print("\n📂 Доступные разделы внутри матча:")
-                            for key in detail_data.keys():
-                                print(f"  - {key}")
-                            return 
-                        
-                print("\n❌ Опять 404. LiveScore крепко держит оборону.")
-
+            print("\n🔥 Отлично! Браузер работает. Дальше научим его кликать на вкладку 'Статистика'!")
+            
         except Exception as e:
-            print(f"⚠️ Ошибка: {e}")
+            print(f"❌ Ошибка загрузки или Cloudflare не пустил: {e}")
+            
+        finally:
+            await browser.close()
+            print("🛑 Браузер закрыт.")
 
 if __name__ == "__main__":
+    # В Railway иногда нужно запускать playwright install перед первым использованием,
+    # но современные билдеры делают это сами. Проверим!
+    import os
+    os.system("playwright install chromium") # Принудительная установка браузера
     asyncio.run(main())
