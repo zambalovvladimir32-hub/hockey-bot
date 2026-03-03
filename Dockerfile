@@ -11,4 +11,4 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 
 # Команда для запуска нашего тестового файла
-CMD ["python", "flash_test.py"]
+CMD CMD ["python", "bot.py"]
