@@ -1,5 +1,5 @@
 # Берем официальный образ со всеми установленными библиотеками для браузера
-FROM mcr.microsoft.com/playwright/python:v1.42.0-jammy
+FROM mcr.microsoft.com/playwright/python:v1.50.0-jammy
 
 WORKDIR /app
 
