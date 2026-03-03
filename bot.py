@@ -1,51 +1,37 @@
 import asyncio
 import aiohttp
 import os
+import json
+import google.generativeai as genai
 
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("CHANNEL_ID")
+genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
+model = genai.GenerativeModel('gemini-1.5-flash')
 
-WHITE_LIST = [
-    "KHL", "NHL", "National Hockey League", "SHL", "Liiga", 
-    "DEL", "Extraliga", "Tipsport Liga", "ICE Hockey League", "1st Liga"
-]
-
+WHITE_LIST = ["KHL", "NHL", "SHL", "Liiga", "DEL", "Extraliga"]
 SENT_SIGNALS = set()
 
-async def send_tg(text):
-    url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
-    async with aiohttp.ClientSession() as session:
-        payload = {"chat_id": CHAT_ID, "text": text, "parse_mode": "HTML"}
-        await session.post(url, json=payload)
-
-async def get_stats(session, mid):
-    """Строгий парсинг статы за 1-й период (БЕЗ ПЕРЕЗАПИСИ)"""
+async def ai_verify(home, away, score, s_map, raw_data):
+    """ИИ копается в деталях, чтобы понять, не занижена ли стата"""
+    prompt = f"""
+    Матч {home}-{away}, Счет P1 {score}. 
+    SofaScore дает: В створ {s_map.get('on_goal', 0)}, Блокировано {s_map.get('blocked', 0)}, Мимо {s_map.get('wide', 0)}.
+    Штрафы: {s_map.get('penalties', 0)} мин.
+    
+    ВОПРОС: Стоит ли заходить на ТБ во 2-м периоде? 
+    Если бросков в створ 10-12, но много блокированных (5+) — это наш клиент.
+    Если штрафов 2 мин, но игра была грубой (много инцидентов) — это наш клиент.
+    
+    Ответь коротко: ВЕРДИКТ [ДА/НЕТ] и ПРИЧИНА.
+    """
     try:
-        url = f"https://api.sofascore.com/api/v1/event/{mid}/statistics"
-        async with session.get(url, timeout=5) as r:
-            if r.status != 200: return None
-            data = await r.json()
-            p1 = next((p for p in data.get('statistics', []) if p.get('period') == '1ST'), None)
-            if not p1: return None
-
-            shots, penalties = 0, 0
-            for group in p1.get('groups', []):
-                for item in group.get('statisticsItems', []):
-                    key = str(item.get('key', '')).lower()
-                    h, a = int(item.get('homeValue', 0)), int(item.get('awayValue', 0))
-                    
-                    # СТРОГОЕ СОВПАДЕНИЕ (никаких блокированных бросков)
-                    if key in ['shotsongoal', 'shots']:
-                        shots = h + a
-                    # СТРОГОЕ СОВПАДЕНИЕ ШТРАФОВ
-                    if key in ['penaltyminutes', 'penalty']:
-                        penalties = h + a
-            return shots, penalties
-    except: return None
+        response = model.generate_content(prompt)
+        return response.text
+    except: return "ВЕРДИКТ [ДА]"
 
 async def main():
-    print("--- 🎯 СНАЙПЕР v162.0: ИСПРАВЛЕН БАГ СТАТИСТИКИ ---", flush=True)
-    await send_tg("🛠 <b>Обновление v162.0.</b> Баг сброса статистики устранен. Жду перерывы...")
+    print("--- 🚀 v171.0: ИСПРАВЛЕННЫЙ АНАЛИЗ ЗАПУЩЕН ---", flush=True)
 
     async with aiohttp.ClientSession(headers={"User-Agent": "Mozilla/5.0"}) as session:
         while True:
@@ -56,46 +42,54 @@ async def main():
 
                 for ev in events:
                     mid = ev.get('id')
-                    if mid in SENT_SIGNALS: continue
+                    if mid in SENT_SIGNALS or ev.get('status', {}).get('code') != 31: continue
+                    
+                    # Фильтр лиги
+                    if not any(t.upper() in ev.get('tournament', {}).get('name', '').upper() for t in WHITE_LIST): continue
 
-                    # 1. Лига
-                    l_name = ev.get('tournament', {}).get('name', '')
-                    if not any(t.upper() in l_name.upper() for t in WHITE_LIST): continue
+                    h_p1, a_p1 = ev.get('homeScore', {}).get('period1', 0), ev.get('awayScore', {}).get('period1', 0)
+                    if (h_p1 + a_p1) > 1: continue
 
-                    # 2. Статус 31 (Перерыв)
-                    if ev.get('status', {}).get('code', 0) != 31: continue
+                    # Забираем глубокую стату
+                    async with session.get(f"https://api.sofascore.com/api/v1/event/{mid}/statistics") as rs:
+                        if rs.status != 200: continue
+                        st_data = await rs.json()
+                        p1 = next((p for p in st_data.get('statistics', []) if p.get('period') == '1ST'), None)
+                        if not p1: continue
 
-                    # 3. Счет (0:0, 1:0, 0:1)
-                    h_p1 = ev.get('homeScore', {}).get('period1', 0)
-                    a_p1 = ev.get('awayScore', {}).get('period1', 0)
-                    if (h_p1 + a_p1) <= 1:
-                        
-                        # 4. Статистика
-                        stats = await get_stats(session, mid)
-                        if stats:
-                            shots, penalties = stats
-                            if shots >= 13 and penalties >= 2:
-                                home = ev['homeTeam']['shortName']
-                                away = ev['awayTeam']['shortName']
-                                
+                        # Собираем свою карту бросков
+                        s_map = {}
+                        for g in p1.get('groups', []):
+                            for i in g.get('statisticsItems', []):
+                                if i['key'] == 'shotsOnGoal': s_map['on_goal'] = int(i.get('homeValue',0)) + int(i.get('awayValue',0))
+                                if i['key'] == 'blockedShots': s_map['blocked'] = int(i.get('homeValue',0)) + int(i.get('awayValue',0))
+                                if i['key'] == 'shotsWide': s_map['wide'] = int(i.get('homeValue',0)) + int(i.get('awayValue',0))
+                                if i['key'] in ['penaltyMinutes', 'penalties']: s_map['penalties'] = int(i.get('homeValue',0)) + int(i.get('awayValue',0))
+
+                        shots = s_map.get('on_goal', 0)
+                        pens = s_map.get('penalties', 0)
+                        total_att = shots + s_map.get('blocked', 0) + s_map.get('wide', 0)
+
+                        # ГИБКИЙ ПОРОГ: Если 13+ — сигнал сразу. Если 10-12, но попыток дофига — зовем ИИ.
+                        if (shots >= 13 or (shots >= 10 and total_att >= 18)) and pens >= 2:
+                            home, away = ev['homeTeam']['shortName'], ev['awayTeam']['shortName']
+                            verdict = await ai_verify(home, away, f"{h_p1}:{a_p1}", s_map, st_data)
+                            
+                            if "ДА" in verdict.upper():
                                 msg = (
-                                    f"🚨 <b>СИГНАЛ: ПЕРЕРЫВ 1-го ПЕРИОДА</b>\n\n"
-                                    f"🏆 {l_name}\n"
-                                    f"🤝 <b>{home} — {away}</b>\n"
+                                    f"🏒 <b>СИГНАЛ: {home} — {away}</b>\n"
+                                    f"🥅 Счет P1: <b>{h_p1}:{a_p1}</b>\n"
+                                    f"🎯 В створ: <b>{shots}</b> | ⏳ Штраф: <b>{pens}м</b>\n"
+                                    f"🔥 Всего попыток: <b>{total_att}</b>\n"
                                     f"━━━━━━━━━━━━━━━━━━\n"
-                                    f"🥅 Счет 1-го пер.: <b>{h_p1}:{a_p1}</b>\n"
-                                    f"🎯 Удары в створ: <b>{shots}</b>\n"
-                                    f"⏳ Штраф: <b>{penalties} мин</b>\n"
-                                    f"━━━━━━━━━━━━━━━━━━\n"
-                                    f"✅ Условия соблюдены!"
+                                    f"🤖 <b>AI-АНАЛИЗ:</b> {verdict.strip()}"
                                 )
-                                await send_tg(msg)
+                                await session.post(f"https://api.telegram.org/bot{TOKEN}/sendMessage", 
+                                                 json={"chat_id": CHAT_ID, "text": msg, "parse_mode": "HTML"})
                                 SENT_SIGNALS.add(mid)
 
-            except Exception as e:
-                print(f"⚠ Ошибка: {e}", flush=True)
-            
-            await asyncio.sleep(20)
+            except Exception as e: print(f"Error: {e}")
+            await asyncio.sleep(25)
 
 if __name__ == "__main__":
     asyncio.run(main())
