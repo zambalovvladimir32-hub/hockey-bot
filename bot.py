@@ -3,85 +3,120 @@ import aiohttp
 import os
 from datetime import datetime, timedelta
 
-# Твои переменные
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("CHANNEL_ID")
 
+# Твой полный список из 35 лиг
+WHITE_LIST = [
+    "1st Liga", "1st Liga Playoffs", "AHL", "Alps Hockey League, Championship Round",
+    "Alps Hockey League, Qualification Round, Group B", "Asia League",
+    "Auroraliiga, Women, Playoffs", "DEL", "Ekstraliga, Playoffs", "EliteHockey Ligaen",
+    "Extraliga", "Hockey Allsvenskan", "HockeyEttan Sodra", "ICE Hockey League",
+    "KHL", "Ligue Magnus", "Liiga", "MHL", "Mestis", "Mestis Playoffs", "NHL",
+    "National League", "OHL", "PWHL", "SDHL", "SHL", "Swiss League, Playoffs",
+    "Tipsport Liga", "U20 Elite, Qualifying Round", "U20 Extraliga Juniorov",
+    "U20 Extraliga Junioru, Championship Round", "U20 Extraliga Junioru, Qualification Round",
+    "University League", "VHL", "WHL, Women"
+]
+
 async def send_tg(session, text):
+    """Отправка сообщений в Telegram"""
     url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
     payload = {"chat_id": CHAT_ID, "text": text, "parse_mode": "HTML"}
-    await session.post(url, json=payload)
-
-async def check_stats(session, mid):
-    """Стучимся в матч и смотрим, есть ли там блок статистики"""
-    url = f"https://api.sofascore.com/api/v1/event/{mid}/statistics"
     try:
-        async with session.get(url, timeout=5) as r:
+        await session.post(url, json=payload)
+    except Exception as e:
+        print(f"Ошибка отправки в ТГ: {e}")
+
+async def fetch_json(session, url):
+    try:
+        async with session.get(url, timeout=10) as r:
             if r.status == 200:
-                data = await r.json()
-                # Если массив statistics не пустой, значит стата есть
-                if data.get('statistics'):
-                    return True
+                return await r.json()
     except: pass
-    return False
+    return None
 
 async def main():
-    print("--- 🕵️‍♂️ ЗАПУСК СКАНЕРА ЛИГ (ЗА 4 ДНЯ) ---", flush=True)
-    
-    # Генерируем даты за последние 4 дня (формат YYYY-MM-DD)
+    print("--- 🕵️‍♂️ БЭКТЕСТЕР ЗАПУЩЕН ---", flush=True)
     dates = [(datetime.now() - timedelta(days=i)).strftime('%Y-%m-%d') for i in range(1, 5)]
     
-    valid_leagues = set()
-    checked_tournaments = set()
+    total_signals = 0
+    goals_1_plus = 0
+    goals_2_plus = 0
+    
+    # Собираем лог матчей, чтобы прикрепить к отчету (если их не миллион)
+    matches_log = ""
 
     async with aiohttp.ClientSession(headers={"User-Agent": "Mozilla/5.0"}) as session:
-        await send_tg(session, "⏳ <b>Начинаю сканирование SofaScore за 4 дня...</b>\nИщу лиги со статистикой бросков/штрафов. Жди...")
-        
-        for date in dates:
-            print(f"📅 Чекаем матчи за {date}", flush=True)
-            url = f"https://api.sofascore.com/api/v1/sport/ice-hockey/scheduled-events/{date}"
-            
-            try:
-                async with session.get(url) as r:
-                    if r.status != 200: continue
-                    events = (await r.json()).get('events', [])
-                    
-                    for ev in events:
-                        t_name = ev.get('tournament', {}).get('name', 'Unknown')
-                        mid = ev.get('id')
-                        status = ev.get('status', {}).get('code', 0)
-                        
-                        # Проверяем только завершенные матчи (обычно статус 100)
-                        if status == 100 and t_name not in checked_tournaments:
-                            checked_tournaments.add(t_name) # Запоминаем, что эту лигу уже видели
-                            
-                            print(f"🔍 Проверяю лигу: {t_name}...", flush=True)
-                            has_stats = await check_stats(session, mid)
-                            
-                            if has_stats:
-                                valid_leagues.add(t_name)
-                                print(f"✅ Стата есть: {t_name}", flush=True)
-                            else:
-                                print(f"❌ Пусто: {t_name}", flush=True)
-                            
-                            # Пауза, чтобы API не кинуло в бан за спам
-                            await asyncio.sleep(0.5) 
-            except Exception as e:
-                print(f"Ошибка на дате {date}: {e}", flush=True)
+        await send_tg(session, "⏳ <b>БЭКТЕСТЕР ЗАПУЩЕН</b>\nСканирую архивы SofaScore за 4 дня (35 лиг).\n<i>Алгоритм: P1 счет <= 1, удары >= 12, штраф >= 2.</i>\n\nСчитаю результаты 2-го периода... Жди.")
 
-        # Формируем итоговое сообщение
-        if valid_leagues:
-            leagues_text = "\n".join([f"🏒 {l}" for l in sorted(valid_leagues)])
-            msg = (f"✅ <b>СКАНИРОВАНИЕ ЗАВЕРШЕНО</b>\n\n"
-                   f"Найдено лиг со статистикой: <b>{len(valid_leagues)}</b>\n\n"
-                   f"Вот полный список:\n"
-                   f"<pre>{leagues_text}</pre>\n\n"
-                   f"<i>Скопируй нужные в свой WHITE_LIST!</i>")
-        else:
-            msg = "❌ Ничего не нашел. Возможно, SofaScore временно заблокировал запросы."
+        for date in dates:
+            print(f"📅 Качаем архив за {date}...", flush=True)
+            url = f"https://api.sofascore.com/api/v1/sport/ice-hockey/scheduled-events/{date}"
+            data = await fetch_json(session, url)
+            if not data: continue
             
-        await send_tg(session, msg)
-        print("--- ОТЧЕТ ОТПРАВЛЕН В TELEGRAM ---", flush=True)
+            events = data.get('events', [])
+            for ev in events:
+                l_name = ev.get('tournament', {}).get('name', '')
+                status = ev.get('status', {}).get('code', 0)
+                
+                if status == 100 and any(t.upper() in l_name.upper() for t in WHITE_LIST):
+                    mid = ev.get('id')
+                    h_p1 = ev.get('homeScore', {}).get('period1', 0)
+                    a_p1 = ev.get('awayScore', {}).get('period1', 0)
+                    
+                    if (h_p1 + a_p1) <= 1:
+                        st_data = await fetch_json(session, f"https://api.sofascore.com/api/v1/event/{mid}/statistics")
+                        if not st_data: continue
+                        
+                        p1 = next((p for p in st_data.get('statistics', []) if p.get('period') == '1ST'), None)
+                        if p1:
+                            s = {i['key']: int(i.get('homeValue',0)) + int(i.get('awayValue',0)) 
+                                 for g in p1.get('groups', []) for i in g.get('statisticsItems', [])}
+                            
+                            on_g = s.get('shotsOnGoal', 0)
+                            pens = s.get('penaltyMinutes', 0)
+                            
+                            # ПРОГОНЯЕМ ЧЕРЕЗ АЛГОРИТМ
+                            if on_g >= 12 and pens >= 2:
+                                total_signals += 1
+                                h_name = ev.get('homeTeam', {}).get('shortName', 'Home')
+                                a_name = ev.get('awayTeam', {}).get('shortName', 'Away')
+                                
+                                h_p2 = ev.get('homeScore', {}).get('period2', 0)
+                                a_p2 = ev.get('awayScore', {}).get('period2', 0)
+                                p2_goals = h_p2 + a_p2
+                                
+                                if p2_goals >= 1: goals_1_plus += 1
+                                if p2_goals >= 2: goals_2_plus += 1
+                                
+                                # Записываем в мини-лог
+                                matches_log += f"🔸 {h_name}-{a_name} | Голов во 2-м: <b>{p2_goals}</b>\n"
+                        
+                        await asyncio.sleep(0.3) # Защита от бана по IP
+
+        # ФОРМИРУЕМ И ОТПРАВЛЯЕМ ИТОГОВЫЙ ОТЧЕТ В ТЕЛЕГУ
+        report = f"📊 <b>ИТОГИ БЭКТЕСТА ЗА 4 ДНЯ</b>\n"
+        report += f"🔎 Проверено лиг: <b>35</b>\n"
+        report += f"🎯 Всего найдено сигналов: <b>{total_signals}</b>\n\n"
+        
+        if total_signals > 0:
+            winrate_1 = (goals_1_plus / total_signals) * 100
+            winrate_2 = (goals_2_plus / total_signals) * 100
+            report += f"✅ <b>Зашел ТБ 0.5 (1+ гол):</b> {goals_1_plus} из {total_signals} (<b>{winrate_1:.1f}%</b>)\n"
+            report += f"🔥 <b>Зашел ТБ 1.5 (2+ гола):</b> {goals_2_plus} из {total_signals} (<b>{winrate_2:.1f}%</b>)\n\n"
+            
+            # Если матчей не слишком много, прикрепим их список (лимит ТГ - 4096 символов)
+            if len(matches_log) < 3000:
+                report += f"📝 <b>Список матчей:</b>\n{matches_log}"
+            else:
+                report += f"📝 <i>Список матчей слишком длинный, чтобы влезть в сообщение.</i>"
+        else:
+            report += "❌ По твоему алгоритму за 4 дня не нашлось ни одного матча."
+
+        await send_tg(session, report)
+        print("✅ Отчет успешно улетел в Телеграм!", flush=True)
 
 if __name__ == "__main__":
     asyncio.run(main())
