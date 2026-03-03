@@ -2,17 +2,15 @@ import asyncio
 import aiohttp
 import os
 
-# Данные из переменных окружения Railway
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("CHANNEL_ID")
 
-# Твой Белый Список лиг
 WHITE_LIST = [
-    "KHL", "National Hockey League", "SHL", "Liiga", 
+    "KHL", "NHL", "National Hockey League", "SHL", "Liiga", 
     "DEL", "Extraliga", "Tipsport Liga", "ICE Hockey League", "1st Liga"
 ]
 
-SENT_SIGNALS = set() # Чтобы не дублировать сигналы
+SENT_SIGNALS = set()
 
 async def send_tg(text):
     url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
@@ -21,35 +19,37 @@ async def send_tg(text):
         await session.post(url, json=payload)
 
 async def get_stats(session, mid):
-    """Получение ударов и штрафов за 1-й период"""
+    """Строгий парсинг статы за 1-й период (БЕЗ ПЕРЕЗАПИСИ)"""
     try:
         url = f"https://api.sofascore.com/api/v1/event/{mid}/statistics"
         async with session.get(url, timeout=5) as r:
             if r.status != 200: return None
             data = await r.json()
-            # Ищем статистику именно за 1-й период
-            period_stats = next((p for p in data.get('statistics', []) if p.get('period') == '1ST'), None)
-            if not period_stats: return None
+            p1 = next((p for p in data.get('statistics', []) if p.get('period') == '1ST'), None)
+            if not p1: return None
 
             shots, penalties = 0, 0
-            for group in period_stats.get('groups', []):
+            for group in p1.get('groups', []):
                 for item in group.get('statisticsItems', []):
                     key = str(item.get('key', '')).lower()
-                    h = int(item.get('homeValue', 0))
-                    a = int(item.get('awayValue', 0))
+                    h, a = int(item.get('homeValue', 0)), int(item.get('awayValue', 0))
                     
-                    if key in ['shots', 'shotsongoal']: shots = h + a
-                    if 'penalty' in key: penalties = h + a
+                    # СТРОГОЕ СОВПАДЕНИЕ (никаких блокированных бросков)
+                    if key in ['shotsongoal', 'shots']:
+                        shots = h + a
+                    # СТРОГОЕ СОВПАДЕНИЕ ШТРАФОВ
+                    if key in ['penaltyminutes', 'penalty']:
+                        penalties = h + a
             return shots, penalties
     except: return None
 
 async def main():
-    print("--- 🎯 СНАЙПЕР ЗАПУЩЕН (Логика 1-го периода) ---", flush=True)
-    
+    print("--- 🎯 СНАЙПЕР v162.0: ИСПРАВЛЕН БАГ СТАТИСТИКИ ---", flush=True)
+    await send_tg("🛠 <b>Обновление v162.0.</b> Баг сброса статистики устранен. Жду перерывы...")
+
     async with aiohttp.ClientSession(headers={"User-Agent": "Mozilla/5.0"}) as session:
         while True:
             try:
-                # 1. Получаем Live матчи
                 async with session.get("https://api.sofascore.com/api/v1/sport/ice-hockey/events/live") as r:
                     if r.status != 200: continue
                     events = (await r.json()).get('events', [])
@@ -58,52 +58,44 @@ async def main():
                     mid = ev.get('id')
                     if mid in SENT_SIGNALS: continue
 
-                    # 2. Фильтр по лиге
-                    league_name = ev.get('tournament', {}).get('name', '')
-                    if not any(target in league_name for target in WHITE_LIST): continue
+                    # 1. Лига
+                    l_name = ev.get('tournament', {}).get('name', '')
+                    if not any(t.upper() in l_name.upper() for t in WHITE_LIST): continue
 
-                    # 3. Фильтр по времени (ждем перерыва после 1-го периода)
-                    # 'status': {'code': 31} обычно означает перерыв (period 1 finished)
-                    # Также проверяем description: 'HT' или 'Period 1'
-                    status = ev.get('status', {}).get('type', '')
-                    description = ev.get('status', {}).get('description', '')
-                    
-                    if description == "After 1st period" or (status == "finished" and ev.get('lastPeriod') == "period1"):
+                    # 2. Статус 31 (Перерыв)
+                    if ev.get('status', {}).get('code', 0) != 31: continue
+
+                    # 3. Счет (0:0, 1:0, 0:1)
+                    h_p1 = ev.get('homeScore', {}).get('period1', 0)
+                    a_p1 = ev.get('awayScore', {}).get('period1', 0)
+                    if (h_p1 + a_p1) <= 1:
                         
-                        # 4. Фильтр по счету (0:0, 1:0, 0:1)
-                        h_score = ev.get('homeScore', {}).get('period1', 0)
-                        a_score = ev.get('awayScore', {}).get('period1', 0)
-                        
-                        if (h_score + a_score) <= 1:
-                            # 5. Проверка статистики
-                            stats = await get_stats(session, mid)
-                            if stats:
-                                shots, penalties = stats
-                                # УСЛОВИЕ: Удары от 13, Штраф от 2
-                                if shots >= 13 and penalties >= 2:
-                                    home = ev['homeTeam']['shortName']
-                                    away = ev['awayTeam']['shortName']
-                                    
-                                    msg = (
-                                        f"🏒 <b>СИГНАЛ: ХОККЕЙ</b>\n"
-                                        f"🏆 Лига: {league_name}\n"
-                                        f"🤝 Матч: {home} vs {away}\n"
-                                        f"⏰ Статус: <b>Перерыв после 1-го периода</b>\n"
-                                        f"-------------------\n"
-                                        f"🥅 Счет 1-го периода: <b>{h_score}:{a_score}</b>\n"
-                                        f"🎯 Удары в створ: <b>{shots}</b>\n"
-                                        f"⏳ Штрафное время: <b>{penalties} мин</b>\n"
-                                        f"-------------------\n"
-                                        f"🔥 <i>Логика: Низкий счет при высокой активности!</i>"
-                                    )
-                                    await send_tg(msg)
-                                    SENT_SIGNALS.add(mid)
-                                    print(f"📢 Сигнал отправлен: {home}-{away}", flush=True)
+                        # 4. Статистика
+                        stats = await get_stats(session, mid)
+                        if stats:
+                            shots, penalties = stats
+                            if shots >= 13 and penalties >= 2:
+                                home = ev['homeTeam']['shortName']
+                                away = ev['awayTeam']['shortName']
+                                
+                                msg = (
+                                    f"🚨 <b>СИГНАЛ: ПЕРЕРЫВ 1-го ПЕРИОДА</b>\n\n"
+                                    f"🏆 {l_name}\n"
+                                    f"🤝 <b>{home} — {away}</b>\n"
+                                    f"━━━━━━━━━━━━━━━━━━\n"
+                                    f"🥅 Счет 1-го пер.: <b>{h_p1}:{a_p1}</b>\n"
+                                    f"🎯 Удары в створ: <b>{shots}</b>\n"
+                                    f"⏳ Штраф: <b>{penalties} мин</b>\n"
+                                    f"━━━━━━━━━━━━━━━━━━\n"
+                                    f"✅ Условия соблюдены!"
+                                )
+                                await send_tg(msg)
+                                SENT_SIGNALS.add(mid)
 
             except Exception as e:
-                print(f"⚠ Ошибка цикла: {e}", flush=True)
+                print(f"⚠ Ошибка: {e}", flush=True)
             
-            await asyncio.sleep(60) # Проверка каждую минуту
+            await asyncio.sleep(20)
 
 if __name__ == "__main__":
     asyncio.run(main())
