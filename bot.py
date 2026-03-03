@@ -3,16 +3,18 @@ import aiohttp
 import json
 
 async def main():
-    print("--- 🕵️‍♂️ ПОДБИРАЕМ КЛЮЧИ К LIVESCORE ---", flush=True)
+    print("--- 🕵️‍♂️ ВЗЛОМ LIVESCORE: ПОДБИРАЕМ КЛЮЧИ V2 (REACT) ---", flush=True)
     
-    url_live = "https://prod-public-api.livescore.com/v1/api/app/live/hockey/3"
+    url_live = "https://prod-public-api.livescore.com/v1/api/react/live/hockey/3.00"
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-        "Accept": "application/json"
+        "Accept": "application/json",
+        "Origin": "https://www.livescore.com",
+        "Referer": "https://www.livescore.com/"
     }
 
     async with aiohttp.ClientSession(headers=headers) as session:
-        print("1️⃣ Ищем матч...", flush=True)
+        print("1️⃣ Ищем матч в лайве...", flush=True)
         try:
             async with session.get(url_live, timeout=10) as r:
                 data = await r.json()
@@ -27,17 +29,17 @@ async def main():
                     if match_id: break
                 
                 if not match_id:
-                    print("🤷‍♂️ Нет матчей в лайве.")
+                    print("🤷‍♂️ Нет матчей в лайве для проверки.")
                     return
                 
                 print(f"✅ Взят матч: {h_name} - {a_name} (ID: {match_id})\n")
                 
-                # Список возможных дверей, за которыми прячут стату
+                # Новая связка ключей (React API)
                 endpoints = [
-                    f"https://prod-public-api.livescore.com/v1/api/app/detail/hockey/{match_id}/3",
-                    f"https://prod-public-api.livescore.com/v1/api/app/match/hockey/{match_id}/3",
-                    f"https://prod-public-api.livescore.com/v1/api/app/statistics/hockey/{match_id}/3",
-                    f"https://prod-public-api.livescore.com/v1/api/app/scoreboard/hockey/{match_id}/3"
+                    f"https://prod-public-api.livescore.com/v1/api/react/match/hockey/{match_id}/3.00",
+                    f"https://prod-public-api.livescore.com/v1/api/react/detail/hockey/{match_id}/3.00",
+                    f"https://prod-public-api.livescore.com/v1/api/react/statistics/hockey/{match_id}/3.00",
+                    f"https://prod-public-api.livescore.com/v1/api/react/match-stats/hockey/{match_id}/3.00"
                 ]
 
                 for idx, url in enumerate(endpoints, 1):
@@ -49,13 +51,12 @@ async def main():
                             print(f"Рабочая ссылка: {url}")
                             detail_data = await rd.json()
                             
-                            # Просто распечатаем все главные ключи, чтобы понять структуру
                             print("\n📂 Доступные разделы внутри матча:")
                             for key in detail_data.keys():
                                 print(f"  - {key}")
-                            return # Выходим, мы нашли что искали!
+                            return 
                         
-                print("\n❌ Ни один ключ не подошел. Видимо, у них еще более хитрая маршрутизация.")
+                print("\n❌ Опять 404. LiveScore крепко держит оборону.")
 
         except Exception as e:
             print(f"⚠️ Ошибка: {e}")
