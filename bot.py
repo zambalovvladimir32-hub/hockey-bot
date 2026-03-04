@@ -32,7 +32,7 @@ async def send_tg(text):
             await session.post(url, json={"chat_id": CHAT_ID, "text": text, "parse_mode": "HTML"})
         except Exception as e: print(f"ТГ ошибка: {e}", flush=True)
 
-# --- ПРОВЕРКА ИТОГОВ (ПОСЛЕ 2 ПЕРИОДА) ---
+# --- ПРОВЕРКА ИТОГОВ ---
 async def check_results(context):
     to_delete = []
     for m_id, data in TRACKED_MATCHES.items():
@@ -61,7 +61,7 @@ async def check_results(context):
 
 # --- ОСНОВНОЙ ПАРСЕР ---
 async def main():
-    print("--- 🦾 БОТ V14: ИДЕАЛЬНАЯ СТАТИСТИКА (БЕЗ ПЕРЕЗАПИСИ) ---", flush=True)
+    print("--- 🦾 БОТ V16: РАСШИРЕННЫЙ СЛОВАРЬ (АНТИ-PIM) ---", flush=True)
     load_data()
     
     async with async_playwright() as p:
@@ -85,19 +85,13 @@ async def main():
                 for row in rows:
                     cls = await row.get_attribute("class")
                     
+                    # Железобетонное чтение лиги
                     if "event__header" in cls:
                         try:
-                            type_loc = row.locator(".event__title--type")
-                            name_loc = row.locator(".event__title--name")
-                            t_text = await type_loc.text_content() if await type_loc.count() > 0 else ""
-                            n_text = await name_loc.text_content() if await name_loc.count() > 0 else ""
-                            
-                            if t_text and n_text: cur_league = f"{t_text.strip()}: {n_text.strip()}"
-                            elif n_text: cur_league = n_text.strip()
-                            elif t_text: cur_league = t_text.strip()
-                            else:
-                                fb = await row.text_content()
-                                cur_league = fb.strip()[:40] if fb else "Неизвестная лига"
+                            header_text = await row.inner_text()
+                            lines = [line.strip() for line in header_text.split('\n') if line.strip()]
+                            if len(lines) >= 2: cur_league = f"{lines[0]}: {lines[1]}"
+                            elif len(lines) == 1: cur_league = lines[0]
                         except: pass
                         continue
                     
@@ -133,6 +127,7 @@ async def main():
                         
                         det = await context.new_page()
                         try:
+                            # 1. ЧТЕНИЕ ИЗ ТАБЛИЦЫ СТАТИСТИКИ
                             await det.goto(f"https://www.flashscore.com/match/{m_id}/#/match-summary/match-statistics/0", timeout=30000)
                             await det.wait_for_timeout(3000)
                             
@@ -146,21 +141,21 @@ async def main():
                             for i, line in enumerate(lines):
                                 line_low = line.lower()
                                 
-                                # 1. БРОСКИ В СТВОР (Защита от перезаписи: если уже нашли, пропускаем "Заблокированные")
-                                if total_sh is None and any(x in line_low for x in ["броски в створ", "shots on goal", "střely na", "выстрелы"]):
+                                # Броски
+                                if total_sh is None and any(x in line_low for x in ["броски в створ", "shots on goal", "střely na"]):
                                     try: total_sh = int(lines[i-1]) + int(lines[i+1])
                                     except: pass
-                                elif total_sh is None and any(x in line_low for x in ["shot", "броск", "střel"]) and not any(x in line_low for x in ["block", "miss", "заблок", "мимо"]):
+                                elif total_sh is None and any(x in line_low for x in ["shot", "броск", "střel"]) and not any(x in line_low for x in ["block", "miss", "заблок", "мимо", "off target", "pct", "%"]):
                                     try: total_sh = int(lines[i-1]) + int(lines[i+1])
                                     except: pass
 
-                                # 2. УДАЛЕНИЯ (Количество свистков прямо из таблицы статы)
-                                if total_wh is None and any(x in line_low for x in ["удаления", "2-min penalties", "vyloučení"]):
+                                # Свистки (Удаления) - ДОБАВЛЕНО 'penalties'
+                                if total_wh is None and any(x in line_low for x in ["удаления", "penalties", "vyloučení", "2-min penalties"]):
                                     try: total_wh = int(lines[i-1]) + int(lines[i+1])
                                     except: pass
 
-                                # 3. ШТРАФНОЕ ВРЕМЯ
-                                if total_pim is None and any(x in line_low for x in ["штрафное время", "penalty minutes", "trestné min"]):
+                                # Штрафное время - ДОБАВЛЕНО 'pim'
+                                if total_pim is None and any(x in line_low for x in ["штрафное время", "penalty minutes", "trestné min", "pim"]):
                                     try: total_pim = int(lines[i-1]) + int(lines[i+1])
                                     except: pass
 
@@ -168,17 +163,26 @@ async def main():
                                 print(f"      ❌ Нет статы бросков.", flush=True)
                                 continue
 
-                            if total_pim is None: total_pim = 0
-                            
-                            # Фолбэк: если слова "удаления" не было в таблице, считаем иконки на главной
-                            if total_wh is None:
+                            # 2. РЕЗЕРВНАЯ ПРОВЕРКА ИЗ ЛЕНТЫ СОБЫТИЙ (Если в таблице пусто)
+                            if total_pim is None or total_wh is None:
                                 await det.goto(f"https://www.flashscore.com/match/{m_id}/#/match-summary", timeout=20000)
                                 await det.wait_for_timeout(2000)
+                                total_pim = total_pim or 0
+                                total_wh = total_wh or 0
                                 try:
-                                    wh_list = await det.locator(".smv__incident:has-text('min'), .smv__incident:has-text('мин'), .smv__incident:has-text(\"'\")").all()
-                                    total_wh = len(wh_list)
-                                except:
-                                    total_wh = 0
+                                    incidents = await det.locator(".smv__incident").all_inner_texts()
+                                    for inc in incidents:
+                                        matches = re.findall(r"\b(\d+)\s*(?:'|min|мин)\b", inc.lower())
+                                        for m in matches:
+                                            val = int(m)
+                                            if val in [2, 4, 5, 10, 20]:
+                                                total_pim += val
+                                                total_wh += 1
+                                except: pass
+
+                            # Если таблица вернула None, но мы ничего не нашли в ленте, ставим 0
+                            total_pim = total_pim or 0
+                            total_wh = total_wh or 0
 
                             print(f"      📊 Итог: Броски={total_sh}, Штрафы={total_pim}м, Свистки={total_wh}", flush=True)
 
