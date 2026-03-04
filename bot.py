@@ -30,6 +30,7 @@ async def send_tg(text):
             await session.post(url, json={"chat_id": CHAT_ID, "text": text, "parse_mode": "HTML"})
         except Exception as e: print(f"ТГ ошибка: {e}", flush=True)
 
+# --- ПРОВЕРКА РЕЗУЛЬТАТА (ЗАШЛО / МИМО) ---
 async def check_results(context):
     to_delete = []
     for m_id, data in TRACKED_MATCHES.items():
@@ -38,15 +39,16 @@ async def check_results(context):
             await page.goto(f"https://www.flashscore.com/match/{m_id}/#/match-summary", timeout=30000)
             status = await page.locator(".detailScore__status").inner_text()
             
+            # Проверяем, наступил ли конец 2-го периода или матч завершен
             if any(x in status for x in ["Break", "3rd", "3-й", "Finished", "Перерыв", "Завершен"]):
                 scores = await page.locator(".detailScore__wrapper").inner_text()
                 nums = re.findall(r"\d+", scores)
                 if len(nums) >= 2:
                     current_total = int(nums[0]) + int(nums[1])
                     if current_total > data['p1_total']:
-                        msg = f"✅ <b>ГОЛ ПОЙМАН! (ЗАШЛО)</b>\n🤝 {data['home']} — {data['away']}\nСтатистика сработала во 2-м периоде 🚀"
+                        msg = f"✅ <b>ГОЛ ПОЙМАН!</b>\n🤝 {data['home']} — {data['away']}\nВторой период принес результат! 🚀"
                     else:
-                        msg = f"❌ <b>БЕЗ ГОЛОВ (МИМО)</b>\n🤝 {data['home']} — {data['away']}\nВторой период прошел всухую."
+                        msg = f"❌ <b>БЕЗ ГОЛОВ</b>\n🤝 {data['home']} — {data['away']}\nВторой период прошел всухую."
                     
                     await send_tg(msg)
                     to_delete.append(m_id)
@@ -56,8 +58,9 @@ async def check_results(context):
     for m_id in to_delete: del TRACKED_MATCHES[m_id]
     if to_delete: save_data()
 
+# --- ОСНОВНОЙ ПАРСЕР ---
 async def main():
-    print("--- 🦾 БОТ V21: УМНЫЙ СЧЕТЧИК ПЕРИОДОВ ---", flush=True)
+    print("--- 🦾 БОТ V22: КОНТРОЛЬ ПЕРВОГО ПЕРЕРЫВА ---", flush=True)
     load_data()
     
     async with async_playwright() as p:
@@ -81,17 +84,12 @@ async def main():
                 for row in rows:
                     cls = await row.get_attribute("class")
                     
+                    # 1. ЗАХВАТ ЛИГИ
                     if "event__header" in cls:
                         try:
-                            cat_node = row.locator(".event__title--type, .event__title--category").first
-                            name_node = row.locator(".event__title--name").first
-                            
-                            cat_txt = await cat_node.evaluate("el => el.textContent") if await cat_node.count() > 0 else ""
-                            name_txt = await name_node.evaluate("el => el.textContent") if await name_node.count() > 0 else ""
-                            
-                            if cat_txt and name_txt: cur_league = f"{cat_txt.strip()}: {name_txt.strip()}"
-                            elif name_txt: cur_league = name_txt.strip()
-                            elif cat_txt: cur_league = cat_txt.strip()
+                            l_text = await row.evaluate("el => el.textContent")
+                            parts = [p.strip() for p in l_text.split('\n') if p.strip()]
+                            cur_league = " - ".join(parts[:2]) if len(parts) >= 2 else parts[0]
                         except: pass
                         continue
                     
@@ -104,12 +102,14 @@ async def main():
                         if not stage: continue
                         stage_lower = stage.lower()
                         
+                        # Проверка: строго перерыв и отсутствие "2-й" в строке статуса
                         if not ("break" in stage_lower or "перерыв" in stage_lower): continue
                         if any(x in stage_lower for x in ["2nd", "3rd", "2-й", "3-й"]): continue
                         
                         m_id = (await row.get_attribute("id")).split("_")[-1]
                         if m_id in TRACKED_MATCHES: continue
 
+                        # Проверка счета (сумма голов <= 1)
                         sc_h_loc = row.locator(".event__score--home")
                         sc_a_loc = row.locator(".event__score--away")
                         if await sc_h_loc.count() == 0 or await sc_a_loc.count() == 0: continue
@@ -127,32 +127,17 @@ async def main():
                         
                         det = await context.new_page()
                         try:
-                            # 1. СТРОГАЯ ПРОВЕРКА НА 1-Й ПЕРИОД (Считаем заголовки периодов)
+                            # 2. ПРОВЕРКА ВНУТРИ МАТЧА: НЕ НАЧАЛСЯ ЛИ 2-Й ПЕРИОД?
                             await det.goto(f"https://www.flashscore.com/match/{m_id}/#/match-summary", timeout=20000)
                             await det.wait_for_timeout(2000)
                             
-                            try:
-                                period_headers_count = await det.locator(".smv__periodHeader").count()
-                                if period_headers_count > 1:
-                                    print("      ❌ Пропуск: В матче уже есть данные 2-го периода (не первый перерыв).", flush=True)
-                                    continue
-                            except: pass
+                            # Если видим заголовок 2-го периода — уходим, это уже не наш клиент
+                            headers = await det.locator(".smv__periodHeader").all_inner_texts()
+                            if len(headers) > 1 or any("2nd" in h or "2-й" in h for h in headers):
+                                print("      ❌ Пропуск: Обнаружен 2-й период в ленте.", flush=True)
+                                continue
 
-                            # Считаем фолбэк-удаления из ленты 1-го периода
-                            fb_pim, fb_wh = 0, 0
-                            try:
-                                incidents = await det.locator(".smv__incident").all()
-                                for inc_loc in incidents:
-                                    inc = await inc_loc.evaluate("el => el.textContent")
-                                    matches = re.findall(r"\b(\d+)\s*(?:'|min|мин)\b", inc.lower())
-                                    for m in matches:
-                                        val = int(m)
-                                        if val in [2, 4, 5, 10, 20]:
-                                            fb_pim += val
-                                            fb_wh += 1
-                            except: pass
-
-                            # 2. ИДЕМ В ОБЩУЮ СТАТИСТИКУ (Так как это 100% первый перерыв, она равна стате 1-го периода)
+                            # 3. СБОР СТАТИСТИКИ (РЕГЕКС)
                             await det.goto(f"https://www.flashscore.com/match/{m_id}/#/match-summary/match-statistics/0", timeout=30000)
                             await det.wait_for_timeout(3000)
                             
@@ -162,31 +147,28 @@ async def main():
                             total_wh = None
                             total_pim = None
                             
-                            # Броски
-                            m_sh = re.search(r"(\d+)[\s\n]+(Shots on Goal|Броски в створ ворот|Střely na branku|Střely na|Броски в створ)[\s\n]+(\d+)", content, re.IGNORECASE)
+                            # Броски в створ ( Regex ищет паттерн: число - название - число )
+                            m_sh = re.search(r"(\d+)[\s\n]*(Shots on Goal|Броски в створ|Střely на|Střely na branku|Střely)[\s\n]*(\d+)", content, re.IGNORECASE)
                             if m_sh: total_sh = int(m_sh.group(1)) + int(m_sh.group(3))
-                            else:
-                                m_sh_fb = re.search(r"(\d+)[\s\n]+(Shots|Броски|Střely)[\s\n]+(\d+)", content, re.IGNORECASE)
-                                if m_sh_fb: total_sh = int(m_sh_fb.group(1)) + int(m_sh_fb.group(3))
 
-                            # Свистки
-                            m_wh = re.search(r"(\d+)[\s\n]+(Penalties|Удаления|Vyloučení|2-min penalties)[\s\n]+(\d+)", content, re.IGNORECASE)
+                            # Удаления (свистки)
+                            m_wh = re.search(r"(\d+)[\s\n]*(Penalties|Удаления|Vyloučení|2-min penalties)[\s\n]*(\d+)", content, re.IGNORECASE)
                             if m_wh: total_wh = int(m_wh.group(1)) + int(m_wh.group(3))
 
-                            # Штрафы
-                            m_pim = re.search(r"(\d+)[\s\n]+(PIM|Penalty Minutes|Штрафное время|Trestné minuty|Trestné min\.)[\s\n]+(\d+)", content, re.IGNORECASE)
+                            # Штрафные минуты (PIM)
+                            m_pim = re.search(r"(\d+)[\s\n]*(PIM|Penalty Minutes|Штрафное время|Trestné minuty|Trestné min\.)[\s\n]*(\d+)", content, re.IGNORECASE)
                             if m_pim: total_pim = int(m_pim.group(1)) + int(m_pim.group(3))
 
                             if total_sh is None:
-                                print(f"      ❌ Нет статы бросков.", flush=True)
+                                print(f"      ❌ Нет статы бросков за P1.", flush=True)
                                 continue
 
-                            total_pim = total_pim if total_pim is not None else fb_pim
-                            total_wh = total_wh if total_wh is not None else fb_wh
+                            total_pim = total_pim or 0
+                            total_wh = total_wh or 0
 
                             print(f"      📊 Итог P1: Броски={total_sh}, Штрафы={total_pim}м, Свистки={total_wh}", flush=True)
 
-                            # --- ЛОГИКА СТРАТЕГИИ ---
+                            # --- КРИТЕРИИ СИГНАЛА ---
                             if total_sh >= 13 and total_pim >= 2 and total_wh >= 1:
                                 msg = (f"🚨 <b>СИГНАЛ: ПЕРЕРЫВ P1</b>\n"
                                        f"🏆 {cur_league}\n"
@@ -197,16 +179,16 @@ async def main():
                                        f"❌ Удаления (P1): <b>{total_wh}</b>\n"
                                        f"⏳ Штраф (P1): <b>{total_pim} мин</b>\n"
                                        f"━━━━━━━━━━━━━━━━━━\n"
-                                       f"🕒 <i>Ждем гол во 2-м периоде... Отчет придет позже!</i>")
+                                       f"🕒 <i>Ждем гол во 2-м периоде... Отчет придет в канал!</i>")
                                 await send_tg(msg)
                                 
                                 TRACKED_MATCHES[m_id] = {"home": home.strip(), "away": away.strip(), "p1_total": sc_h + sc_a}
                                 save_data()
                                 print("      ✅ СИГНАЛ В ТЕЛЕГРАМЕ!", flush=True)
                             else:
-                                print("      ❌ Пропуск по цифрам (не дотянули).", flush=True)
+                                print("      ❌ Пропуск по цифрам.", flush=True)
                         except Exception as e:
-                            print(f"      ⚠️ Ошибка чтения деталей: {e}", flush=True)
+                            print(f"      ⚠️ Ошибка в деталях: {e}", flush=True)
                         finally: await det.close()
                 
                 print(f"💤 Проверено: {matches_checked}. Сплю 60 сек...", flush=True)
