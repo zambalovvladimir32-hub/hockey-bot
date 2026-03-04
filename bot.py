@@ -57,7 +57,7 @@ async def check_results(context):
     if to_delete: save_data()
 
 async def main():
-    print("--- 🦾 БОТ V17: АБСОЛЮТНЫЙ РЕГЕКС ---", flush=True)
+    print("--- 🦾 БОТ V18: ИДЕАЛЬНЫЙ БАЛАНС ---", flush=True)
     load_data()
     
     async with async_playwright() as p:
@@ -81,12 +81,12 @@ async def main():
                 for row in rows:
                     cls = await row.get_attribute("class")
                     
-                    # 1. ЖЕЛЕЗОБЕТОННЫЙ ЗАХВАТ ЛИГИ (Через JS)
+                    # ПРОСТОЙ И НАДЕЖНЫЙ ЗАХВАТ ЛИГИ
                     if "event__header" in cls:
                         try:
-                            header_text = await row.evaluate("el => el.innerText")
-                            lines = [x.strip() for x in header_text.split('\n') if x.strip()]
-                            if len(lines) >= 2: cur_league = f"{lines[0]}: {lines[1]}"
+                            txt = await row.inner_text()
+                            lines = [x.strip() for x in txt.split('\n') if x.strip()]
+                            if len(lines) >= 2: cur_league = f"{lines[0]} - {lines[1]}"
                             elif len(lines) == 1: cur_league = lines[0]
                         except: pass
                         continue
@@ -123,39 +123,48 @@ async def main():
                         
                         det = await context.new_page()
                         try:
-                            # Идем СТРОГО на вкладку 1-го периода (/match-statistics/1)
-                            await det.goto(f"https://www.flashscore.com/match/{m_id}/#/match-summary/match-statistics/1", timeout=30000)
-                            await det.wait_for_timeout(4000) # Даем время отрендерить вкладку
+                            # ИДЕМ НА ГЛАВНУЮ ВКЛАДКУ СТАТЫ (Где все работает)
+                            await det.goto(f"https://www.flashscore.com/match/{m_id}/#/match-summary/match-statistics/0", timeout=30000)
+                            await det.wait_for_timeout(3000)
                             
-                            # Берем весь видимый текст страницы целиком
-                            content = await det.evaluate("document.body.innerText")
+                            content = await det.locator("#detail").inner_text()
+                            lines = [line.strip() for line in content.split('\n') if line.strip()]
                             
                             total_sh = None
-                            total_wh = None
                             total_pim = None
+                            total_wh = None
                             
-                            # МАГИЯ РЕГЕКСА: Ищем паттерн "Цифра -> Пробелы/Слова -> Цифра"
+                            for i, line in enumerate(lines):
+                                line_low = line.lower()
+                                
+                                # БРОСКИ (Берем только первый раз, не задваиваем)
+                                if total_sh is None and any(x in line_low for x in ["shots on goal", "броски в створ", "střely na", "выстрелы по"]):
+                                    try: total_sh = int(lines[i-1]) + int(lines[i+1])
+                                    except: pass
+
+                                # СВИСТКИ (Penalties)
+                                if total_wh is None and any(x in line_low for x in ["penalties", "удаления", "vyloučení", "2-min penalties"]):
+                                    try: total_wh = int(lines[i-1]) + int(lines[i+1])
+                                    except: pass
+
+                                # ШТРАФЫ (PIM)
+                                if total_pim is None and any(x in line_low for x in ["pim", "penalty minutes", "штрафное время", "trestné min"]):
+                                    try: total_pim = int(lines[i-1]) + int(lines[i+1])
+                                    except: pass
                             
-                            # Броски
-                            m_sh = re.search(r"(\d+)[\s\n]+(Shots on Goal|Броски в створ ворот|Střely na branku|Střely na|Броски в створ)[\s\n]+(\d+)", content, re.IGNORECASE)
-                            if m_sh: total_sh = int(m_sh.group(1)) + int(m_sh.group(3))
-                            else:
-                                m_sh_fb = re.search(r"(\d+)[\s\n]+(Shots|Броски|Střely)[\s\n]+(\d+)", content, re.IGNORECASE)
-                                if m_sh_fb: total_sh = int(m_sh_fb.group(1)) + int(m_sh_fb.group(3))
-
-                            # Свистки (Удаления / Penalties)
-                            m_wh = re.search(r"(\d+)[\s\n]+(Penalties|Удаления|Vyloučení|2-min penalties)[\s\n]+(\d+)", content, re.IGNORECASE)
-                            if m_wh: total_wh = int(m_wh.group(1)) + int(m_wh.group(3))
-
-                            # Штрафные минуты (PIM)
-                            m_pim = re.search(r"(\d+)[\s\n]+(PIM|Penalty Minutes|Штрафное время|Trestné minuty|Trestné min\.)[\s\n]+(\d+)", content, re.IGNORECASE)
-                            if m_pim: total_pim = int(m_pim.group(1)) + int(m_pim.group(3))
+                            # Фолбэк для бросков (если не было фразы "в створ", ищем просто "Shots")
+                            if total_sh is None:
+                                for i, line in enumerate(lines):
+                                    line_low = line.lower()
+                                    if total_sh is None and any(x in line_low for x in ["shots", "броски", "střely"]) and not any(x in line_low for x in ["off", "miss", "block", "заблок", "мимо", "pct", "%"]):
+                                        try: total_sh = int(lines[i-1]) + int(lines[i+1])
+                                        except: pass
 
                             if total_sh is None:
-                                print(f"      ❌ Нет статы бросков (или страница не прогрузилась).", flush=True)
+                                print(f"      ❌ Нет статы бросков.", flush=True)
                                 continue
 
-                            # Резервная проверка удалений по ленте (если в таблице пусто)
+                            # Фолбэк для удалений: если в таблице пусто, идем в Ленту
                             if total_pim is None or total_wh is None:
                                 await det.goto(f"https://www.flashscore.com/match/{m_id}/#/match-summary", timeout=20000)
                                 await det.wait_for_timeout(2000)
