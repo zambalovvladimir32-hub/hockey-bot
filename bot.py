@@ -1,6 +1,5 @@
 import asyncio
 import os
-import re
 import json
 import aiohttp
 from playwright.async_api import async_playwright
@@ -12,7 +11,7 @@ DB_MATCHES = "tracked_matches.json"
 
 TRACKED_MATCHES = {}
 
-# --- РАБОТА С ПАМЯТЬЮ ТОЛЬКО ДЛЯ РЕЗУЛЬТАТОВ ---
+# --- ПАМЯТЬ ДЛЯ ОТЧЕТОВ ---
 def save_data():
     with open(DB_MATCHES, "w", encoding="utf-8") as f:
         json.dump(TRACKED_MATCHES, f)
@@ -23,7 +22,7 @@ def load_data():
         with open(DB_MATCHES, "r", encoding="utf-8") as f:
             TRACKED_MATCHES = json.load(f)
 
-# --- TELEGRAM ---
+# --- ТЕЛЕГРАМ ---
 async def send_tg(text):
     if not TOKEN or not CHAT_ID: return
     url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
@@ -32,7 +31,7 @@ async def send_tg(text):
             await session.post(url, json={"chat_id": CHAT_ID, "text": text, "parse_mode": "HTML"})
         except Exception as e: print(f"ТГ ошибка: {e}", flush=True)
 
-# --- ПРОВЕРКА РЕЗУЛЬТАТА ---
+# --- ПРОВЕРКА ИТОГОВ (ПОСЛЕ 2 ПЕРИОДА) ---
 async def check_results(context):
     to_delete = []
     for m_id, data in TRACKED_MATCHES.items():
@@ -42,6 +41,7 @@ async def check_results(context):
             status = await page.locator(".detailScore__status").inner_text()
             
             if any(x in status for x in ["Break", "3rd Period", "Finished", "Перерыв", "Завершен"]):
+                import re
                 scores = await page.locator(".detailScore__wrapper").inner_text()
                 nums = re.findall(r"\d+", scores)
                 if len(nums) >= 2:
@@ -61,7 +61,7 @@ async def check_results(context):
 
 # --- ОСНОВНОЙ ПАРСЕР ---
 async def main():
-    print("--- 🦾 БОТ V9: ЧИСТАЯ ЛОГИКА (БЕЗ ЧЕРНЫХ СПИСКОВ) ---", flush=True)
+    print("--- 🦾 БОТ V10: CSS-ПАРСЕР (ПРЯМОЙ ДОСТУП В ТАБЛИЦУ) ---", flush=True)
     load_data()
     
     async with async_playwright() as p:
@@ -72,7 +72,6 @@ async def main():
         while True:
             try:
                 if TRACKED_MATCHES: 
-                    print(f"🔄 Жду голы во 2-м периоде для {len(TRACKED_MATCHES)} матчей...", flush=True)
                     await check_results(context)
 
                 print("\n📡 Обновляю Flashscore...", flush=True)
@@ -80,18 +79,17 @@ async def main():
                 await main_page.wait_for_selector(".event__match", timeout=20000)
                 
                 rows = await main_page.locator(".event__header, .event__match").all()
-                cur_league = "Неизвестная лига"
+                cur_league = "Unknown"
                 matches_checked = 0
-                
-                print(f"📊 Элементов в линии: {len(rows)}.", flush=True)
                 
                 for row in rows:
                     cls = await row.get_attribute("class")
                     
-                    # Надежное получение названия лиги (без выкрутасов)
+                    # ПРАВИЛЬНЫЙ ПОИСК ЛИГИ
                     if "event__header" in cls:
-                        header_text = await row.inner_text()
-                        cur_league = header_text.split('\n')[0] if header_text else "Неизвестная лига"
+                        title_loc = row.locator(".event__title--name")
+                        if await title_loc.count() > 0:
+                            cur_league = await title_loc.inner_text()
                         continue
                     
                     if "event__match" in cls:
@@ -124,34 +122,57 @@ async def main():
                         home = await row.locator(".event__participant--home").inner_text()
                         away = await row.locator(".event__participant--away").inner_text()
                         
-                        print(f"   🔍 КАНДИДАТ: {home} - {away} (Счет: {sc_h}:{sc_a} | Лига: {cur_league}).", flush=True)
+                        print(f"   🔍 КАНДИДАТ: {home} - {away} (Счет: {sc_h}:{sc_a} | Лига: {cur_league})", flush=True)
                         
                         det = await context.new_page()
                         try:
-                            # 1. СТАТИСТИКА (Броски и Минуты)
+                            # 1. ЧИТАЕМ СТАТИСТИКУ (Напрямую по ячейкам)
                             await det.goto(f"https://www.flashscore.com/match/{m_id}/#/match-summary/match-statistics/0", timeout=30000)
-                            await det.wait_for_timeout(3000)
-                            content = await det.locator("#detail").inner_text()
                             
-                            sh = re.search(r"(\d+)\s*(Shots on goal|Броски в створ ворот|Выстрелы по цели|Střely)\s*(\d+)", content, re.IGNORECASE)
-                            pim = re.search(r"(\d+)\s*(Penalty Minutes|Штрафное время|Trestné minuty)\s*(\d+)", content, re.IGNORECASE)
+                            total_sh = None
+                            total_pim = 0
+                            found_cats = []
                             
-                            if not sh:
-                                print(f"      ❌ Пропуск: В этом матче не ведут стату бросков.", flush=True)
+                            try:
+                                # Ждем загрузки таблиц
+                                await det.wait_for_selector(".stat__categoryName", timeout=5000)
+                                stat_rows = await det.locator(".stat__row").all()
+                                
+                                for sr in stat_rows:
+                                    cat_name = await sr.locator(".stat__categoryName").inner_text()
+                                    found_cats.append(cat_name)
+                                    cat_l = cat_name.lower()
+                                    
+                                    # Ищем броски
+                                    if any(x in cat_l for x in ["shot", "броск", "выстрел", "střel"]):
+                                        h_val = await sr.locator(".stat__homeValue").inner_text()
+                                        a_val = await sr.locator(".stat__awayValue").inner_text()
+                                        total_sh = int(h_val) + int(a_val)
+                                        
+                                    # Ищем штрафы
+                                    if any(x in cat_l for x in ["penalt", "штраф", "trest"]):
+                                        h_val = await sr.locator(".stat__homeValue").inner_text()
+                                        a_val = await sr.locator(".stat__awayValue").inner_text()
+                                        total_pim = int(h_val) + int(a_val)
+                            except Exception as e:
+                                pass # Перехватим ниже
+                                
+                            if total_sh is None:
+                                print(f"      ❌ Нет бросков. Вижу на странице: {', '.join(found_cats)}", flush=True)
                                 continue
-
-                            total_sh = int(sh.group(1)) + int(sh.group(3))
-                            total_pim = int(pim.group(1)) + int(pim.group(3)) if pim else 0
-                            
-                            # 2. СВИСТКИ (Удаления)
+                                
+                            # 2. ЧИТАЕМ СВИСТКИ (Так как это перерыв P1, просто считаем все удаления на странице)
                             await det.goto(f"https://www.flashscore.com/match/{m_id}/#/match-summary", timeout=20000)
                             await det.wait_for_timeout(2000)
-                            wh_list = await det.locator(".smv__periodHeader:has-text('1st'), .smv__periodHeader:has-text('1-й')").locator("xpath=following-sibling::div[1]").locator(".smv__incident:has-text('min'), .smv__incident:has-text('мин')").all()
-                            total_wh = len(wh_list)
+                            try:
+                                wh_list = await det.locator(".smv__incident:has-text('min'), .smv__incident:has-text('мин')").all()
+                                total_wh = len(wh_list)
+                            except:
+                                total_wh = 0
 
                             print(f"      📊 Броски={total_sh}, Штрафы={total_pim}м, Свистки={total_wh}", flush=True)
 
-                            # --- ПРОВЕРКА СТРАТЕГИИ ---
+                            # --- СТРАТЕГИЯ ---
                             if total_sh >= 13 and total_pim >= 2 and total_wh >= 1:
                                 msg = (f"🚨 <b>СИГНАЛ: ПЕРЕРЫВ P1</b>\n"
                                        f"🏆 {cur_league}\n"
@@ -167,14 +188,15 @@ async def main():
                                 
                                 TRACKED_MATCHES[m_id] = {"home": home, "away": away, "p1_total": sc_h + sc_a}
                                 save_data()
-                                print("      ✅ СИГНАЛ УЛЕТЕЛ!", flush=True)
+                                print("      ✅ СИГНАЛ ОТПРАВЛЕН!", flush=True)
                             else:
-                                print("      ❌ Пропуск: Не дотягивает по цифрам.", flush=True)
+                                print("      ❌ Пропуск по цифрам.", flush=True)
+                                
                         except Exception as e:
-                            print(f"      ⚠️ Ошибка чтения деталей: {e}", flush=True)
+                            print(f"      ⚠️ Ошибка в деталях: {e}", flush=True)
                         finally: await det.close()
                 
-                print(f"💤 Проверено: {matches_checked}. Сплю 60 сек...", flush=True)
+                print(f"💤 Проверено матчей: {matches_checked}. Сплю 60 сек...", flush=True)
             except Exception as e:
                 print(f"⚠️ Ошибка цикла: {e}", flush=True)
             
