@@ -57,7 +57,7 @@ async def check_results(context):
     if to_delete: save_data()
 
 async def main():
-    print("--- 🦾 БОТ V20: СТРОГО 1-Й ПЕРИОД ---", flush=True)
+    print("--- 🦾 БОТ V21: УМНЫЙ СЧЕТЧИК ПЕРИОДОВ ---", flush=True)
     load_data()
     
     async with async_playwright() as p:
@@ -127,14 +127,16 @@ async def main():
                         
                         det = await context.new_page()
                         try:
-                            # 1. ЗАЩИТА ОТ 2-ГО ПЕРЕРЫВА (Проверяем Ленту)
+                            # 1. СТРОГАЯ ПРОВЕРКА НА 1-Й ПЕРИОД (Считаем заголовки периодов)
                             await det.goto(f"https://www.flashscore.com/match/{m_id}/#/match-summary", timeout=20000)
                             await det.wait_for_timeout(2000)
                             
-                            summary_text = await det.evaluate("document.body.innerText")
-                            if "2nd Period" in summary_text or "2-й период" in summary_text:
-                                print("      ❌ Пропуск: Это уже 2-й перерыв (или дальше). Нам нужен только 1-й.", flush=True)
-                                continue
+                            try:
+                                period_headers_count = await det.locator(".smv__periodHeader").count()
+                                if period_headers_count > 1:
+                                    print("      ❌ Пропуск: В матче уже есть данные 2-го периода (не первый перерыв).", flush=True)
+                                    continue
+                            except: pass
 
                             # Считаем фолбэк-удаления из ленты 1-го периода
                             fb_pim, fb_wh = 0, 0
@@ -150,17 +152,9 @@ async def main():
                                             fb_wh += 1
                             except: pass
 
-                            # 2. ИДЕМ В СТАТИСТИКУ И КЛИКАЕМ 1-Й ПЕРИОД
+                            # 2. ИДЕМ В ОБЩУЮ СТАТИСТИКУ (Так как это 100% первый перерыв, она равна стате 1-го периода)
                             await det.goto(f"https://www.flashscore.com/match/{m_id}/#/match-summary/match-statistics/0", timeout=30000)
                             await det.wait_for_timeout(3000)
-                            
-                            try:
-                                # Жестко переключаем на вкладку "1-й период"
-                                tab_1st = det.locator('a[href="#/match-summary/match-statistics/1"]')
-                                if await tab_1st.count() > 0:
-                                    await tab_1st.first.click(timeout=3000)
-                                    await det.wait_for_timeout(1500)
-                            except: pass
                             
                             content = await det.evaluate("document.body.innerText")
                             
@@ -184,14 +178,11 @@ async def main():
                             if m_pim: total_pim = int(m_pim.group(1)) + int(m_pim.group(3))
 
                             if total_sh is None:
-                                print(f"      ❌ Нет статы бросков за 1-й период.", flush=True)
+                                print(f"      ❌ Нет статы бросков.", flush=True)
                                 continue
 
-                            total_pim = total_pim if total_pim is None else total_pim
-                            total_wh = total_wh if total_wh is None else total_wh
-                            
-                            if total_pim is None: total_pim = fb_pim
-                            if total_wh is None: total_wh = fb_wh
+                            total_pim = total_pim if total_pim is not None else fb_pim
+                            total_wh = total_wh if total_wh is not None else fb_wh
 
                             print(f"      📊 Итог P1: Броски={total_sh}, Штрафы={total_pim}м, Свистки={total_wh}", flush=True)
 
@@ -206,7 +197,7 @@ async def main():
                                        f"❌ Удаления (P1): <b>{total_wh}</b>\n"
                                        f"⏳ Штраф (P1): <b>{total_pim} мин</b>\n"
                                        f"━━━━━━━━━━━━━━━━━━\n"
-                                       f"🕒 <i>Ждем гол во 2-м периоде...</i>")
+                                       f"🕒 <i>Ждем гол во 2-м периоде... Отчет придет позже!</i>")
                                 await send_tg(msg)
                                 
                                 TRACKED_MATCHES[m_id] = {"home": home.strip(), "away": away.strip(), "p1_total": sc_h + sc_a}
