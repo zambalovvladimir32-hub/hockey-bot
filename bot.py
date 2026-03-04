@@ -30,7 +30,7 @@ async def send_tg(text):
             await session.post(url, json={"chat_id": CHAT_ID, "text": text, "parse_mode": "HTML"})
         except Exception as e: print(f"ТГ ошибка: {e}", flush=True)
 
-# --- ПРОВЕРКА РЕЗУЛЬТАТОВ ---
+# --- ПРОВЕРКА ИТОГОВ (ВТОРОЙ ПЕРИОД) ---
 async def check_results(context):
     to_delete = []
     for m_id, data in TRACKED_MATCHES.items():
@@ -47,7 +47,7 @@ async def check_results(context):
                 if len(nums) >= 2:
                     current_total = int(nums[0]) + int(nums[1])
                     if current_total > data['p1_total']:
-                        msg = f"✅ <b>ГОЛ ПОЙМАН!</b>\n🤝 {data['home']} — {data['away']}\nСтавка на 2-й период зашла! 🚀"
+                        msg = f"✅ <b>ГОЛ ПОЙМАН!</b>\n🤝 {data['home']} — {data['away']}\nВторой период принес результат! 🚀"
                     else:
                         msg = f"❌ <b>БЕЗ ГОЛОВ</b>\n🤝 {data['home']} — {data['away']}\nВторой период прошел всухую."
                     await send_tg(msg)
@@ -65,7 +65,7 @@ async def main():
     
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True, args=['--no-sandbox', '--disable-dev-shm-usage'])
-        context = await browser.new_context(user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36")
+        context = await browser.new_context(user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/119.0.0.0 Safari/537.36")
         main_page = await context.new_page()
         
         while True:
@@ -121,12 +121,12 @@ async def main():
                         
                         det = await context.new_page()
                         try:
-                            # 1. ПРОВЕРКА НА ЛИШНИЕ ПЕРИОДЫ
+                            # 1. ПРОВЕРКА НА ЛИШНИЕ ПЕРИОДЫ (Лента событий)
                             await det.goto(f"https://www.flashscore.com/match/{m_id}/#/match-summary", timeout=20000)
                             await det.wait_for_selector(".smv__periodHeader", timeout=5000)
                             headers = await det.locator(".smv__periodHeader").all_inner_texts()
                             if len(headers) > 1:
-                                print("      ❌ Пропуск: Уже есть 2-й период.", flush=True)
+                                print("      ❌ Пропуск: Уже начался 2-й период.", flush=True)
                                 continue
 
                             # 2. ПЕРЕХОД В СТАТИСТИКУ И ОЖИДАНИЕ ТАБЛИЦЫ
@@ -135,7 +135,7 @@ async def main():
                             total_sh, total_wh, total_pim = None, 0, 0
                             
                             try:
-                                # Ждем появления хотя бы одной строки статистики (например, "Shots")
+                                # Ждем появления хотя бы одной строки статистики (8 сек макс)
                                 await det.wait_for_selector(".stat__row", timeout=8000)
                                 stat_rows = await det.locator(".stat__row").all()
                                 
@@ -146,22 +146,22 @@ async def main():
                                     
                                     val_sum = int(h_val) + int(a_val)
                                     
-                                    if any(x in name for x in ["shot", "броски в створ", "střely на"]):
-                                        if total_sh is None: total_sh = val_sum # Только первый заголовок про броски
+                                    if any(x in name for x in ["shot", "броски в створ", "střely na"]):
+                                        if total_sh is None: total_sh = val_sum 
                                     elif any(x in name for x in ["penalties", "удаления", "vyloučení"]):
                                         total_wh = val_sum
                                     elif any(x in name for x in ["pim", "penalty minutes", "штрафное время"]):
                                         total_pim = val_sum
-                            except Exception as e:
-                                print(f"      ⚠️ Статистика не прогрузилась вовремя.", flush=True)
+                            except Exception:
+                                print(f"      ⚠️ Статистика не прогрузилась.", flush=True)
 
                             if total_sh is None:
-                                print(f"      ❌ Не удалось найти броски в таблице.", flush=True)
+                                print(f"      ❌ Не нашли броски в таблице.", flush=True)
                                 continue
 
                             print(f"      📊 Итог P1: Броски={total_sh}, Штрафы={total_pim}м, Удаления={total_wh}", flush=True)
 
-                            # --- УСЛОВИЯ СТРАТЕГИИ ---
+                            # --- УСЛОВИЯ СИГНАЛА ---
                             if total_sh >= 13 and total_pim >= 2 and total_wh >= 1:
                                 msg = (f"🚨 <b>СИГНАЛ: ПЕРЕРЫВ P1</b>\n"
                                        f"🏆 {cur_league}\n"
