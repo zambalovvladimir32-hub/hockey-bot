@@ -13,7 +13,7 @@ DB_MATCHES = "tracked_matches.json"
 
 WHITE_LIST = {"NHL", "KHL", "SHL", "AHL", "ВХЛ", "МХЛ"}
 BLACK_LIST = set()
-TRACKED_MATCHES = {} # {match_id: {"home": str, "away": str, "p1_total": int}}
+TRACKED_MATCHES = {}
 
 # --- РАБОТА С ФАЙЛАМИ ---
 def save_data():
@@ -44,7 +44,7 @@ async def send_tg(text):
             await session.post(url, json={"chat_id": CHAT_ID, "text": text, "parse_mode": "HTML"})
         except Exception as e: print(f"ТГ ошибка: {e}")
 
-# --- ПРОВЕРКА РЕЗУЛЬТАТА (ПОСЛЕ P2) ---
+# --- ПРОВЕРКА РЕЗУЛЬТАТА ---
 async def check_results(context):
     to_delete = []
     for m_id, data in TRACKED_MATCHES.items():
@@ -53,11 +53,8 @@ async def check_results(context):
             await page.goto(f"https://www.flashscore.com/match/{m_id}/#/match-summary", timeout=30000)
             status = await page.locator(".detailScore__status").inner_text()
             
-            # Проверяем, если начался перерыв после P2, начался P3 или матч окончен
             if any(x in status for x in ["Break", "3rd Period", "Finished", "Перерыв"]):
-                # Берем текущий общий счет
                 scores = await page.locator(".detailScore__wrapper").inner_text()
-                # Извлекаем цифры счета (например "2 - 1")
                 nums = re.findall(r"\d+", scores)
                 if len(nums) >= 2:
                     current_total = int(nums[0]) + int(nums[1])
@@ -76,7 +73,7 @@ async def check_results(context):
 
 # --- ОСНОВНОЙ ПАРСЕР ---
 async def main():
-    print("--- 🦾 БОТ-АНАЛИТИК: ТОЛЬКО СТАТИСТИКА ---", flush=True)
+    print("--- 🦾 БОТ-АНАЛИТИК V5: ИСПРАВЛЕНЫ СЛОВАРИ ---", flush=True)
     load_data()
     
     async with async_playwright() as p:
@@ -86,10 +83,8 @@ async def main():
         
         while True:
             try:
-                # 1. Проверяем доехавшие результаты
                 if TRACKED_MATCHES: await check_results(context)
 
-                # 2. Ищем новые сигналы
                 print("\n📡 Поиск матчей в перерыве P1...", flush=True)
                 await main_page.goto("https://www.flashscore.com/hockey/", timeout=60000)
                 await main_page.wait_for_selector(".event__match", timeout=20000)
@@ -107,30 +102,38 @@ async def main():
                     if "event__match" in cls:
                         if cur_league in BLACK_LIST: continue
                         
-                        # ФИЛЬТР: Только перерыв 1-го периода
+                        # ФИЛЬТР: Только перерыв. Ищем и "Break", и "Перерыв"
                         stage = await row.locator(".event__stage").inner_text()
-                        if "Break" not in stage or "1st" not in stage: continue
+                        stage_lower = stage.lower()
+                        if not ("break" in stage_lower or "перерыв" in stage_lower): continue
+                        
+                        # Защита: чтобы не брать перерыв после 2-го периода
+                        if any(x in stage_lower for x in ["2nd", "3rd", "2-й", "3-й"]): continue
                         
                         m_id = (await row.get_attribute("id")).split("_")[-1]
                         if m_id in TRACKED_MATCHES: continue
 
-                        sc_h = int(await row.locator(".event__score--home").inner_text())
-                        sc_a = int(await row.locator(".event__score--away").inner_text())
+                        sc_h_txt = await row.locator(".event__score--home").inner_text()
+                        sc_a_txt = await row.locator(".event__score--away").inner_text()
+                        
+                        if not sc_h_txt.isdigit() or not sc_a_txt.isdigit(): continue
+                        
+                        sc_h, sc_a = int(sc_h_txt), int(sc_a_txt)
                         if (sc_h + sc_a) > 1: continue
 
                         home = await row.locator(".event__participant--home").inner_text()
                         away = await row.locator(".event__participant--away").inner_text()
                         
-                        # Детальный разбор
                         det = await context.new_page()
                         try:
-                            # Статистика бросков и минут
+                            # 1. СТАТИСТИКА (Броски и Минуты)
                             await det.goto(f"https://www.flashscore.com/match/{m_id}/#/match-summary/match-statistics/0", timeout=30000)
                             await det.wait_for_timeout(3000)
                             content = await det.locator("#detail").inner_text()
                             
-                            sh = re.search(r"(\d+)\s*(Shots on Goal|Выстрелы по цели|Střely)\s*(\d+)", content)
-                            pim = re.search(r"(\d+)\s*(Penalty Minutes|Штрафное время|Trestné minuty)\s*(\d+)", content)
+                            # Игнорируем регистр и ищем правильные слова
+                            sh = re.search(r"(\d+)\s*(Shots on goal|Броски в створ ворот|Выстрелы по цели|Střely)\s*(\d+)", content, re.IGNORECASE)
+                            pim = re.search(r"(\d+)\s*(Penalty Minutes|Штрафное время|Trestné minuty)\s*(\d+)", content, re.IGNORECASE)
                             
                             if not sh:
                                 if cur_league not in WHITE_LIST:
@@ -140,13 +143,14 @@ async def main():
                             total_sh = int(sh.group(1)) + int(sh.group(3))
                             total_pim = int(pim.group(1)) + int(pim.group(3)) if pim else 0
                             
-                            # Лента событий (свистки)
+                            # 2. СВИСТКИ (Удаления)
                             await det.goto(f"https://www.flashscore.com/match/{m_id}/#/match-summary", timeout=20000)
                             await det.wait_for_timeout(2000)
+                            # Ищем все элементы минут в 1-м периоде
                             wh_list = await det.locator(".smv__periodHeader:has-text('1st'), .smv__periodHeader:has-text('1-й')").locator("xpath=following-sibling::div[1]").locator(".smv__incident:has-text('min'), .smv__incident:has-text('мин')").all()
                             total_wh = len(wh_list)
 
-                            # ПРОВЕРКА СТРАТЕГИИ: Счет <=1, Броски >=13, Штрафы >=2, Свистки >=1
+                            # --- ПРОВЕРКА СТРАТЕГИИ ---
                             if total_sh >= 13 and total_pim >= 2 and total_wh >= 1:
                                 if cur_league not in WHITE_LIST:
                                     WHITE_LIST.add(cur_league); save_data()
@@ -166,9 +170,11 @@ async def main():
                                 
                                 TRACKED_MATCHES[m_id] = {"home": home, "away": away, "p1_total": sc_h + sc_a}
                                 save_data()
-                        except: pass
+                        except Exception as e:
+                            print(f"Ошибка парсинга деталей: {e}")
                         finally: await det.close()
-            except: pass
+            except Exception as e:
+                print(f"Ошибка цикла: {e}")
             await asyncio.sleep(60)
 
 if __name__ == "__main__":
