@@ -57,7 +57,7 @@ async def check_results(context):
     if to_delete: save_data()
 
 async def main():
-    print("--- 🦾 БОТ V18: ИДЕАЛЬНЫЙ БАЛАНС ---", flush=True)
+    print("--- 🦾 БОТ V20: СТРОГО 1-Й ПЕРИОД ---", flush=True)
     load_data()
     
     async with async_playwright() as p:
@@ -81,13 +81,17 @@ async def main():
                 for row in rows:
                     cls = await row.get_attribute("class")
                     
-                    # ПРОСТОЙ И НАДЕЖНЫЙ ЗАХВАТ ЛИГИ
                     if "event__header" in cls:
                         try:
-                            txt = await row.inner_text()
-                            lines = [x.strip() for x in txt.split('\n') if x.strip()]
-                            if len(lines) >= 2: cur_league = f"{lines[0]} - {lines[1]}"
-                            elif len(lines) == 1: cur_league = lines[0]
+                            cat_node = row.locator(".event__title--type, .event__title--category").first
+                            name_node = row.locator(".event__title--name").first
+                            
+                            cat_txt = await cat_node.evaluate("el => el.textContent") if await cat_node.count() > 0 else ""
+                            name_txt = await name_node.evaluate("el => el.textContent") if await name_node.count() > 0 else ""
+                            
+                            if cat_txt and name_txt: cur_league = f"{cat_txt.strip()}: {name_txt.strip()}"
+                            elif name_txt: cur_league = name_txt.strip()
+                            elif cat_txt: cur_league = cat_txt.strip()
                         except: pass
                         continue
                     
@@ -123,68 +127,73 @@ async def main():
                         
                         det = await context.new_page()
                         try:
-                            # ИДЕМ НА ГЛАВНУЮ ВКЛАДКУ СТАТЫ (Где все работает)
+                            # 1. ЗАЩИТА ОТ 2-ГО ПЕРЕРЫВА (Проверяем Ленту)
+                            await det.goto(f"https://www.flashscore.com/match/{m_id}/#/match-summary", timeout=20000)
+                            await det.wait_for_timeout(2000)
+                            
+                            summary_text = await det.evaluate("document.body.innerText")
+                            if "2nd Period" in summary_text or "2-й период" in summary_text:
+                                print("      ❌ Пропуск: Это уже 2-й перерыв (или дальше). Нам нужен только 1-й.", flush=True)
+                                continue
+
+                            # Считаем фолбэк-удаления из ленты 1-го периода
+                            fb_pim, fb_wh = 0, 0
+                            try:
+                                incidents = await det.locator(".smv__incident").all()
+                                for inc_loc in incidents:
+                                    inc = await inc_loc.evaluate("el => el.textContent")
+                                    matches = re.findall(r"\b(\d+)\s*(?:'|min|мин)\b", inc.lower())
+                                    for m in matches:
+                                        val = int(m)
+                                        if val in [2, 4, 5, 10, 20]:
+                                            fb_pim += val
+                                            fb_wh += 1
+                            except: pass
+
+                            # 2. ИДЕМ В СТАТИСТИКУ И КЛИКАЕМ 1-Й ПЕРИОД
                             await det.goto(f"https://www.flashscore.com/match/{m_id}/#/match-summary/match-statistics/0", timeout=30000)
                             await det.wait_for_timeout(3000)
                             
-                            content = await det.locator("#detail").inner_text()
-                            lines = [line.strip() for line in content.split('\n') if line.strip()]
+                            try:
+                                # Жестко переключаем на вкладку "1-й период"
+                                tab_1st = det.locator('a[href="#/match-summary/match-statistics/1"]')
+                                if await tab_1st.count() > 0:
+                                    await tab_1st.first.click(timeout=3000)
+                                    await det.wait_for_timeout(1500)
+                            except: pass
+                            
+                            content = await det.evaluate("document.body.innerText")
                             
                             total_sh = None
-                            total_pim = None
                             total_wh = None
+                            total_pim = None
                             
-                            for i, line in enumerate(lines):
-                                line_low = line.lower()
-                                
-                                # БРОСКИ (Берем только первый раз, не задваиваем)
-                                if total_sh is None and any(x in line_low for x in ["shots on goal", "броски в створ", "střely na", "выстрелы по"]):
-                                    try: total_sh = int(lines[i-1]) + int(lines[i+1])
-                                    except: pass
+                            # Броски
+                            m_sh = re.search(r"(\d+)[\s\n]+(Shots on Goal|Броски в створ ворот|Střely na branku|Střely na|Броски в створ)[\s\n]+(\d+)", content, re.IGNORECASE)
+                            if m_sh: total_sh = int(m_sh.group(1)) + int(m_sh.group(3))
+                            else:
+                                m_sh_fb = re.search(r"(\d+)[\s\n]+(Shots|Броски|Střely)[\s\n]+(\d+)", content, re.IGNORECASE)
+                                if m_sh_fb: total_sh = int(m_sh_fb.group(1)) + int(m_sh_fb.group(3))
 
-                                # СВИСТКИ (Penalties)
-                                if total_wh is None and any(x in line_low for x in ["penalties", "удаления", "vyloučení", "2-min penalties"]):
-                                    try: total_wh = int(lines[i-1]) + int(lines[i+1])
-                                    except: pass
+                            # Свистки
+                            m_wh = re.search(r"(\d+)[\s\n]+(Penalties|Удаления|Vyloučení|2-min penalties)[\s\n]+(\d+)", content, re.IGNORECASE)
+                            if m_wh: total_wh = int(m_wh.group(1)) + int(m_wh.group(3))
 
-                                # ШТРАФЫ (PIM)
-                                if total_pim is None and any(x in line_low for x in ["pim", "penalty minutes", "штрафное время", "trestné min"]):
-                                    try: total_pim = int(lines[i-1]) + int(lines[i+1])
-                                    except: pass
-                            
-                            # Фолбэк для бросков (если не было фразы "в створ", ищем просто "Shots")
-                            if total_sh is None:
-                                for i, line in enumerate(lines):
-                                    line_low = line.lower()
-                                    if total_sh is None and any(x in line_low for x in ["shots", "броски", "střely"]) and not any(x in line_low for x in ["off", "miss", "block", "заблок", "мимо", "pct", "%"]):
-                                        try: total_sh = int(lines[i-1]) + int(lines[i+1])
-                                        except: pass
+                            # Штрафы
+                            m_pim = re.search(r"(\d+)[\s\n]+(PIM|Penalty Minutes|Штрафное время|Trestné minuty|Trestné min\.)[\s\n]+(\d+)", content, re.IGNORECASE)
+                            if m_pim: total_pim = int(m_pim.group(1)) + int(m_pim.group(3))
 
                             if total_sh is None:
-                                print(f"      ❌ Нет статы бросков.", flush=True)
+                                print(f"      ❌ Нет статы бросков за 1-й период.", flush=True)
                                 continue
 
-                            # Фолбэк для удалений: если в таблице пусто, идем в Ленту
-                            if total_pim is None or total_wh is None:
-                                await det.goto(f"https://www.flashscore.com/match/{m_id}/#/match-summary", timeout=20000)
-                                await det.wait_for_timeout(2000)
-                                total_pim = total_pim or 0
-                                total_wh = total_wh or 0
-                                try:
-                                    incidents = await det.locator(".smv__incident").all_inner_texts()
-                                    for inc in incidents:
-                                        matches = re.findall(r"\b(\d+)\s*(?:'|min|мин)\b", inc.lower())
-                                        for m in matches:
-                                            val = int(m)
-                                            if val in [2, 4, 5, 10, 20]:
-                                                total_pim += val
-                                                total_wh += 1
-                                except: pass
+                            total_pim = total_pim if total_pim is None else total_pim
+                            total_wh = total_wh if total_wh is None else total_wh
+                            
+                            if total_pim is None: total_pim = fb_pim
+                            if total_wh is None: total_wh = fb_wh
 
-                            total_pim = total_pim or 0
-                            total_wh = total_wh or 0
-
-                            print(f"      📊 Итог: Броски={total_sh}, Штрафы={total_pim}м, Свистки={total_wh}", flush=True)
+                            print(f"      📊 Итог P1: Броски={total_sh}, Штрафы={total_pim}м, Свистки={total_wh}", flush=True)
 
                             # --- ЛОГИКА СТРАТЕГИИ ---
                             if total_sh >= 13 and total_pim >= 2 and total_wh >= 1:
@@ -193,11 +202,11 @@ async def main():
                                        f"🤝 {home.strip()} — {away.strip()}\n"
                                        f"━━━━━━━━━━━━━━━━━━\n"
                                        f"🥅 Счет P1: <b>{sc_h}:{sc_a}</b>\n"
-                                       f"🎯 Броски: <b>{total_sh}</b>\n"
-                                       f"❌ Удаления: <b>{total_wh}</b>\n"
-                                       f"⏳ Штраф: <b>{total_pim} мин</b>\n"
+                                       f"🎯 Броски (P1): <b>{total_sh}</b>\n"
+                                       f"❌ Удаления (P1): <b>{total_wh}</b>\n"
+                                       f"⏳ Штраф (P1): <b>{total_pim} мин</b>\n"
                                        f"━━━━━━━━━━━━━━━━━━\n"
-                                       f"🕒 <i>Ждем гол во 2-м периоде... Отчет придет позже!</i>")
+                                       f"🕒 <i>Ждем гол во 2-м периоде...</i>")
                                 await send_tg(msg)
                                 
                                 TRACKED_MATCHES[m_id] = {"home": home.strip(), "away": away.strip(), "p1_total": sc_h + sc_a}
