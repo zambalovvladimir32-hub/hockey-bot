@@ -12,7 +12,6 @@ DB_MATCHES = "tracked_matches.json"
 
 TRACKED_MATCHES = {}
 
-# --- ПАМЯТЬ ДЛЯ ОТЧЕТОВ ---
 def save_data():
     with open(DB_MATCHES, "w", encoding="utf-8") as f:
         json.dump(TRACKED_MATCHES, f)
@@ -23,7 +22,6 @@ def load_data():
         with open(DB_MATCHES, "r", encoding="utf-8") as f:
             TRACKED_MATCHES = json.load(f)
 
-# --- ТЕЛЕГРАМ ---
 async def send_tg(text):
     if not TOKEN or not CHAT_ID: return
     url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
@@ -32,7 +30,6 @@ async def send_tg(text):
             await session.post(url, json={"chat_id": CHAT_ID, "text": text, "parse_mode": "HTML"})
         except Exception as e: print(f"ТГ ошибка: {e}", flush=True)
 
-# --- ПРОВЕРКА ИТОГОВ ---
 async def check_results(context):
     to_delete = []
     for m_id, data in TRACKED_MATCHES.items():
@@ -59,9 +56,8 @@ async def check_results(context):
     for m_id in to_delete: del TRACKED_MATCHES[m_id]
     if to_delete: save_data()
 
-# --- ОСНОВНОЙ ПАРСЕР ---
 async def main():
-    print("--- 🦾 БОТ V16: РАСШИРЕННЫЙ СЛОВАРЬ (АНТИ-PIM) ---", flush=True)
+    print("--- 🦾 БОТ V17: АБСОЛЮТНЫЙ РЕГЕКС ---", flush=True)
     load_data()
     
     async with async_playwright() as p:
@@ -85,11 +81,11 @@ async def main():
                 for row in rows:
                     cls = await row.get_attribute("class")
                     
-                    # Железобетонное чтение лиги
+                    # 1. ЖЕЛЕЗОБЕТОННЫЙ ЗАХВАТ ЛИГИ (Через JS)
                     if "event__header" in cls:
                         try:
-                            header_text = await row.inner_text()
-                            lines = [line.strip() for line in header_text.split('\n') if line.strip()]
+                            header_text = await row.evaluate("el => el.innerText")
+                            lines = [x.strip() for x in header_text.split('\n') if x.strip()]
                             if len(lines) >= 2: cur_league = f"{lines[0]}: {lines[1]}"
                             elif len(lines) == 1: cur_league = lines[0]
                         except: pass
@@ -127,43 +123,39 @@ async def main():
                         
                         det = await context.new_page()
                         try:
-                            # 1. ЧТЕНИЕ ИЗ ТАБЛИЦЫ СТАТИСТИКИ
-                            await det.goto(f"https://www.flashscore.com/match/{m_id}/#/match-summary/match-statistics/0", timeout=30000)
-                            await det.wait_for_timeout(3000)
+                            # Идем СТРОГО на вкладку 1-го периода (/match-statistics/1)
+                            await det.goto(f"https://www.flashscore.com/match/{m_id}/#/match-summary/match-statistics/1", timeout=30000)
+                            await det.wait_for_timeout(4000) # Даем время отрендерить вкладку
                             
-                            content = await det.locator("#detail").inner_text()
-                            lines = [line.strip() for line in content.split('\n') if line.strip()]
+                            # Берем весь видимый текст страницы целиком
+                            content = await det.evaluate("document.body.innerText")
                             
                             total_sh = None
-                            total_pim = None
                             total_wh = None
+                            total_pim = None
                             
-                            for i, line in enumerate(lines):
-                                line_low = line.lower()
-                                
-                                # Броски
-                                if total_sh is None and any(x in line_low for x in ["броски в створ", "shots on goal", "střely na"]):
-                                    try: total_sh = int(lines[i-1]) + int(lines[i+1])
-                                    except: pass
-                                elif total_sh is None and any(x in line_low for x in ["shot", "броск", "střel"]) and not any(x in line_low for x in ["block", "miss", "заблок", "мимо", "off target", "pct", "%"]):
-                                    try: total_sh = int(lines[i-1]) + int(lines[i+1])
-                                    except: pass
+                            # МАГИЯ РЕГЕКСА: Ищем паттерн "Цифра -> Пробелы/Слова -> Цифра"
+                            
+                            # Броски
+                            m_sh = re.search(r"(\d+)[\s\n]+(Shots on Goal|Броски в створ ворот|Střely na branku|Střely na|Броски в створ)[\s\n]+(\d+)", content, re.IGNORECASE)
+                            if m_sh: total_sh = int(m_sh.group(1)) + int(m_sh.group(3))
+                            else:
+                                m_sh_fb = re.search(r"(\d+)[\s\n]+(Shots|Броски|Střely)[\s\n]+(\d+)", content, re.IGNORECASE)
+                                if m_sh_fb: total_sh = int(m_sh_fb.group(1)) + int(m_sh_fb.group(3))
 
-                                # Свистки (Удаления) - ДОБАВЛЕНО 'penalties'
-                                if total_wh is None and any(x in line_low for x in ["удаления", "penalties", "vyloučení", "2-min penalties"]):
-                                    try: total_wh = int(lines[i-1]) + int(lines[i+1])
-                                    except: pass
+                            # Свистки (Удаления / Penalties)
+                            m_wh = re.search(r"(\d+)[\s\n]+(Penalties|Удаления|Vyloučení|2-min penalties)[\s\n]+(\d+)", content, re.IGNORECASE)
+                            if m_wh: total_wh = int(m_wh.group(1)) + int(m_wh.group(3))
 
-                                # Штрафное время - ДОБАВЛЕНО 'pim'
-                                if total_pim is None and any(x in line_low for x in ["штрафное время", "penalty minutes", "trestné min", "pim"]):
-                                    try: total_pim = int(lines[i-1]) + int(lines[i+1])
-                                    except: pass
+                            # Штрафные минуты (PIM)
+                            m_pim = re.search(r"(\d+)[\s\n]+(PIM|Penalty Minutes|Штрафное время|Trestné minuty|Trestné min\.)[\s\n]+(\d+)", content, re.IGNORECASE)
+                            if m_pim: total_pim = int(m_pim.group(1)) + int(m_pim.group(3))
 
                             if total_sh is None:
-                                print(f"      ❌ Нет статы бросков.", flush=True)
+                                print(f"      ❌ Нет статы бросков (или страница не прогрузилась).", flush=True)
                                 continue
 
-                            # 2. РЕЗЕРВНАЯ ПРОВЕРКА ИЗ ЛЕНТЫ СОБЫТИЙ (Если в таблице пусто)
+                            # Резервная проверка удалений по ленте (если в таблице пусто)
                             if total_pim is None or total_wh is None:
                                 await det.goto(f"https://www.flashscore.com/match/{m_id}/#/match-summary", timeout=20000)
                                 await det.wait_for_timeout(2000)
@@ -180,7 +172,6 @@ async def main():
                                                 total_wh += 1
                                 except: pass
 
-                            # Если таблица вернула None, но мы ничего не нашли в ленте, ставим 0
                             total_pim = total_pim or 0
                             total_wh = total_wh or 0
 
