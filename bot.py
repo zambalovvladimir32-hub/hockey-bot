@@ -1,77 +1,91 @@
 import asyncio
 import os
-import aiohttp
+import json
 import re
+from playwright.async_api import async_playwright
 
 # --- КОНФИГ ---
-PROXY_URL = os.getenv("PROXY_URL")  # Должен быть http://user:pass@ip:port
+PROXY_URL = os.getenv("PROXY_URL") 
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("CHANNEL_ID")
+DB_MATCHES = "tracked_matches.json"
 
-async def get_flashscore_data(endpoint):
-    """Забирает сырые данные напрямую через API Flashscore"""
-    headers = {
-        "x-fsign": "SW9D1eZo",  # Ключ авторизации потока
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-        "Referer": "https://www.flashscore.ru/",
-        "X-Requested-With": "XMLHttpRequest"
-    }
-    
+TRACKED_MATCHES = {}
+
+def save_data():
+    with open(DB_MATCHES, "w", encoding="utf-8") as f:
+        json.dump(TRACKED_MATCHES, f)
+
+async def send_tg(text):
+    if not TOKEN or not CHAT_ID: return
+    url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
+    import aiohttp
     async with aiohttp.ClientSession() as session:
+        try: await session.post(url, json={"chat_id": CHAT_ID, "text": text, "parse_mode": "HTML"})
+        except: pass
+
+async def handle_response(response):
+    """Перехватчик сетевых ответов"""
+    # Ищем пакеты данных Flashscore (хоккей лайв)
+    if "feed/f_4_2_" in response.url:
         try:
-            url = f"https://d.flashscore.ru/x/feed/{endpoint}"
-            # В aiohttp прокси передается параметром proxy в сам запрос
-            async with session.get(url, headers=headers, proxy=PROXY_URL, timeout=15) as resp:
-                if resp.status == 200:
-                    return await resp.text()
-                else:
-                    print(f"📡 Сервер ответил статусом: {resp.status}")
-        except Exception as e:
-            print(f"📡 Ошибка соединения: {e}")
-    return None
+            raw_data = await response.text()
+            if not raw_data: return
+            
+            matches = raw_data.split("~AA÷")
+            print(f"📡 ПЕРЕХВАЧЕНО: {len(matches)-1} матчей в потоке!", flush=True)
+            
+            for m in matches[1:]:
+                # Здесь логика парсинга сырого потока из V43
+                if "¬AC÷36¬" in m: # Код перерыва P1
+                    m_id = m.split("¬")[0]
+                    home = re.search(r"AE÷([^¬]+)", m).group(1)
+                    away = re.search(r"AF÷([^¬]+)", m).group(1)
+                    print(f"   🎯 Вижу перерыв: {home} - {away} (ID: {m_id})", flush=True)
+                    # Можно слать сигнал или запрашивать статку дальше
+        except: pass
 
 async def main():
-    print(f"--- 🦾 БОТ V43: GHOST MODE (STABLE) ---", flush=True)
+    print(f"--- 🦾 БОТ V44: NUCLEAR INTERCEPTOR ---", flush=True)
     
-    while True:
-        try:
-            print("\n📡 Запрашиваю свежий поток LIVE...", flush=True)
-            # f_4_2_3_ru_1 — это код ленты хоккейных лайв-матчей
-            raw_data = await get_flashscore_data("f_4_2_3_ru_1")
-            
-            if not raw_data:
-                print("❌ Поток пуст или прокси заблокирован.", flush=True)
-            else:
-                # Flashscore разделяет матчи меткой ~AA÷
-                matches = raw_data.split("~AA÷")
-                found_count = len(matches) - 1
-                print(f"📊 В потоке событий: {found_count}", flush=True)
-                
-                if found_count > 0:
-                    for m in matches[1:]:
-                        try:
-                            # Парсим ID матча и команды из сырого текста
-                            m_id = m.split("¬")[0]
-                            # AC÷36 — код перерыва во Flashscore
-                            if "¬AC÷36¬" in m or "перерыв" in m.lower():
-                                home = re.search(r"AE÷([^¬]+)", m).group(1)
-                                away = re.search(r"AF÷([^¬]+)", m).group(1)
-                                score_h = re.search(r"AG÷(\d+)", m)
-                                score_a = re.search(r"AH÷(\d+)", m)
-                                
-                                if score_h and score_a:
-                                    sc_h, sc_a = int(score_h.group(1)), int(score_a.group(2))
-                                    if (sc_h + sc_a) <= 1:
-                                        print(f"   🎯 ПЕРЕРЫВ: {home} {sc_h}:{sc_a} {away} (ID: {m_id})", flush=True)
-                                        # Тут бот может запросить статку конкретно по m_id
-                        except: continue
-                else:
-                    print("🧐 Поток получен, но активных матчей в нем сейчас нет.")
+    async with async_playwright() as p:
+        proxy_cfg = {"server": PROXY_URL} if PROXY_URL else None
+        
+        # Запускаем браузер с защитой от обнаружения
+        browser = await p.chromium.launch(
+            headless=True, 
+            proxy=proxy_cfg,
+            args=['--no-sandbox', '--disable-blink-features=AutomationControlled']
+        )
+        
+        context = await browser.new_context(
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+        )
 
-            await asyncio.sleep(60)
-        except Exception as e:
-            print(f"⚠️ Ошибка цикла: {e}")
-            await asyncio.sleep(10)
+        page = await context.new_page()
+        
+        # ВКЛЮЧАЕМ ПЕРЕХВАТ
+        page.on("response", handle_response)
+
+        while True:
+            try:
+                print("\n🌐 Захожу на Flashscore для захвата данных...", flush=True)
+                # Заходим на сайт. Даже если он не прогрузится до конца, 
+                # перехватчик сработает на первых же пакетах данных.
+                try:
+                    await page.goto("https://www.flashscore.ru/hockey/", timeout=60000)
+                except:
+                    print("⚠️ Таймаут загрузки, но перехватчик мог успеть поймать данные...", flush=True)
+                
+                # Даем браузеру "подышать" и попринимать пакеты
+                await asyncio.sleep(30)
+                
+                # Обновляем страницу для получения свежего потока
+                await page.reload(timeout=60000)
+                
+            except Exception as e:
+                print(f"⚠️ Ошибка: {e}", flush=True)
+                await asyncio.sleep(10)
 
 if __name__ == "__main__":
     asyncio.run(main())
