@@ -8,6 +8,7 @@ from playwright.async_api import async_playwright
 # --- КОНФИГ ---
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("CHANNEL_ID")
+PROXY_URL = os.getenv("PROXY_URL") # Формат: http://user:pass@ip:port
 DB_MATCHES = "tracked_matches.json"
 
 TRACKED_MATCHES = {}
@@ -30,7 +31,7 @@ async def send_tg(text):
             await session.post(url, json={"chat_id": CHAT_ID, "text": text, "parse_mode": "HTML"})
         except Exception as e: print(f"ТГ ошибка: {e}", flush=True)
 
-# ПРОВЕРКА ГОЛА ВО 2-М ПЕРИОДЕ
+# ПРОВЕРКА РЕЗУЛЬТАТОВ (ОТЧЕТЫ)
 async def check_results(context):
     to_delete = []
     for m_id, data in TRACKED_MATCHES.items():
@@ -47,9 +48,9 @@ async def check_results(context):
                 if len(nums) >= 2:
                     current_total = int(nums[0]) + int(nums[1])
                     if current_total > data['p1_total']:
-                        msg = f"✅ <b>ГОЛ ПОЙМАН!</b>\n🤝 {data['home']} — {data['away']}\nСтавка на 2-й период зашла! 🚀"
+                        msg = f"✅ <b>ГОЛ ПОЙМАН!</b>\n🤝 {data['home']} — {data['away']}\nСтавка зашла! 🚀"
                     else:
-                        msg = f"❌ <b>БЕЗ ГОЛОВ</b>\n🤝 {data['home']} — {data['away']}\n2-й период по нулям."
+                        msg = f"❌ <b>БЕЗ ГОЛОВ</b>\n🤝 {data['home']} — {data['away']}\n2-й период всухую."
                     await send_tg(msg)
                     to_delete.append(m_id)
         except Exception: pass
@@ -59,12 +60,25 @@ async def check_results(context):
     if to_delete: save_data()
 
 async def main():
-    print("--- 🦾 БОТ V24: FINAL RESISTANCE ---", flush=True)
+    print(f"--- 🦾 БОТ V25: ПРОКСИ-ДЕСАНТ ---", flush=True)
+    if PROXY_URL: print(f"🌐 Использую прокси: {PROXY_URL}", flush=True)
+    else: print("⚠️ Внимание: PROXY_URL не задан, работаю без прокси!", flush=True)
+    
     load_data()
     
     async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=True, args=['--no-sandbox', '--disable-dev-shm-usage'])
-        context = await browser.new_context(user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36")
+        # Настройка прокси для браузера
+        proxy_settings = {"server": PROXY_URL} if PROXY_URL else None
+        
+        browser = await p.chromium.launch(
+            headless=True, 
+            proxy=proxy_settings,
+            args=['--no-sandbox', '--disable-dev-shm-usage']
+        )
+        
+        context = await browser.new_context(
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+        )
         main_page = await context.new_page()
         
         while True:
@@ -72,7 +86,7 @@ async def main():
                 if TRACKED_MATCHES: 
                     await check_results(context)
 
-                print("\n📡 Обновляю Flashscore...", flush=True)
+                print("\n📡 Обновляю линию...", flush=True)
                 await main_page.goto("https://www.flashscore.com/hockey/", timeout=60000)
                 await main_page.wait_for_selector(".event__match", timeout=30000)
                 
@@ -83,7 +97,6 @@ async def main():
                 for row in rows:
                     cls = await row.get_attribute("class") or ""
                     
-                    # 1. ЗАХВАТ ЛИГИ (Жесткий сплит)
                     if "event__header" in cls:
                         try:
                             l_text = await row.inner_text()
@@ -99,7 +112,7 @@ async def main():
                         stage = await stage_loc.inner_text()
                         stage_lower = (stage or "").lower()
                         
-                        # Только первый перерыв
+                        # Строго первый перерыв
                         if not ("break" in stage_lower or "перерыв" in stage_lower): continue
                         if any(x in stage_lower for x in ["2nd", "3rd", "2-й", "3-й"]): continue
                         
@@ -120,20 +133,20 @@ async def main():
                         
                         det = await context.new_page()
                         try:
-                            # 2. ПРОВЕРКА: СТРОГО ПЕРВЫЙ ПЕРЕРЫВ
+                            # Проверка на 1-й период
                             await det.goto(f"https://www.flashscore.com/match/{m_id}/#/match-summary", timeout=30000)
                             await det.wait_for_timeout(3000)
-                            summary_text = await det.content()
-                            if "2nd Period" in summary_text or "2-й период" in summary_text:
-                                print("      ❌ Пропуск: Уже 2-й период.", flush=True)
+                            content_summary = await det.content()
+                            if "2nd Period" in content_summary or "2-й период" in content_summary:
+                                print("      ❌ Скип: Уже 2-й период.", flush=True)
                                 continue
 
-                            # 3. СБОР СТАТИСТИКИ
+                            # Сбор статистики
                             await det.goto(f"https://www.flashscore.com/match/{m_id}/#/match-summary/match-statistics/0", timeout=30000)
                             try:
                                 await det.wait_for_selector(".stat__row", timeout=15000)
                             except:
-                                print(f"      ⚠️ Статистика не прогрузилась.", flush=True)
+                                print(f"      ⚠️ Статистика не найдена (даже с прокси).", flush=True)
                                 continue
 
                             stat_rows = await det.locator(".stat__row").all()
@@ -147,25 +160,25 @@ async def main():
                                     val_sum = int(h_val) + int(a_val)
                                 except: continue
 
-                                # Броски (ТОЛЬКО ПЕРВОЕ СОВПАДЕНИЕ - ЗАЩИТА ОТ УДВОЕНИЯ)
+                                # Броски (защита от дублей)
                                 if total_sh is None and any(x in cat_name for x in ["shots on goal", "броски в створ", "střely na branku"]):
                                     total_sh = val_sum
                                 
-                                # Свистки (Удаления)
+                                # Удаления
                                 if any(x in cat_name for x in ["penalties", "удаления", "vyloučení", "2-min penalties"]):
                                     total_wh = val_sum
                                 
-                                # Штрафное время (PIM)
+                                # Штрафное время
                                 if any(x in cat_name for x in ["pim", "penalty minutes", "штрафное время", "trestné minuty"]):
                                     total_pim = val_sum
 
                             if total_sh is None:
-                                print(f"      ❌ Броски не найдены.", flush=True)
+                                print(f"      ❌ Бросков нет в таблице.", flush=True)
                                 continue
 
-                            print(f"      📊 Итог P1: Броски={total_sh}, Штрафы={total_pim}м, Свистки={total_wh}", flush=True)
+                            print(f"      📊 Стата: Броски={total_sh}, Штрафы={total_pim}м, Удаления={total_wh}", flush=True)
 
-                            # 4. ОТПРАВКА СИГНАЛА
+                            # СИГНАЛ
                             if total_sh >= 13 and total_pim >= 2 and total_wh >= 1:
                                 msg = (f"🚨 <b>СИГНАЛ: ПЕРЕРЫВ P1</b>\n"
                                        f"🏆 {cur_league}\n"
@@ -180,12 +193,12 @@ async def main():
                                 await send_tg(msg)
                                 TRACKED_MATCHES[m_id] = {"home": home, "away": away, "p1_total": sc_h + sc_a}
                                 save_data()
-                                print("      ✅ СИГНАЛ ОТПРАВЛЕН!", flush=True)
+                                print("      ✅ СИГНАЛ УШЕЛ!", flush=True)
                             else:
-                                print("      ❌ Не дотянули по цифрам.", flush=True)
+                                print("      ❌ Цифры слабые.", flush=True)
 
                         except Exception as e:
-                            print(f"      ⚠️ Ошибка: {e}", flush=True)
+                            print(f"      ⚠️ Ошибка внутри матча: {e}", flush=True)
                         finally: await det.close()
                 
                 print(f"💤 Проверено: {matches_checked}. Сплю 60 сек...", flush=True)
