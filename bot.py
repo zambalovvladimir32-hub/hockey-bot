@@ -8,107 +8,117 @@ from playwright.async_api import async_playwright
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("CHANNEL_ID")
 DB_MATCHES = "tracked_matches.json"
+WHITE_LIST = "whitelist_leagues.json"
+GREY_LIST = "greylist_leagues.json"
+BLACK_LIST = "blacklist_leagues.json"
 
-TRACKED_MATCHES = {}
-
-def save_data():
-    with open(DB_MATCHES, "w", encoding="utf-8") as f:
-        json.dump(TRACKED_MATCHES, f)
+TRACKED = {}
+WHITELIST = set()
+GREYLIST = set()
+BLACKLIST = set()
 
 def load_data():
-    global TRACKED_MATCHES
-    if os.path.exists(DB_MATCHES):
-        try:
-            with open(DB_MATCHES, "r", encoding="utf-8") as f:
-                TRACKED_MATCHES = json.load(f)
-        except: TRACKED_MATCHES = {}
+    global TRACKED, WHITELIST, GREYLIST, BLACKLIST
+    try:
+        if os.path.exists(DB_MATCHES): TRACKED = json.load(open(DB_MATCHES, 'r'))
+        if os.path.exists(WHITE_LIST): WHITELIST = set(json.load(open(WHITE_LIST, 'r')))
+        if os.path.exists(GREY_LIST): GREYLIST = set(json.load(open(GREY_LIST, 'r')))
+        if os.path.exists(BLACK_LIST): BLACKLIST = set(json.load(open(BLACK_LIST, 'r')))
+    except: pass
 
-async def send_tg(text):
-    if not TOKEN or not CHAT_ID: return
-    import aiohttp
-    url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
-    async with aiohttp.ClientSession() as session:
-        try: await session.post(url, json={"chat_id": CHAT_ID, "text": text, "parse_mode": "HTML"})
-        except: pass
+def save_json(path, data):
+    with open(path, 'w', encoding='utf-8') as f:
+        json.dump(list(data) if isinstance(data, set) else data, f, ensure_ascii=False)
 
 async def main():
-    print(f"--- 🦾 БОТ V55: АНАЛИЗАТОР СТАТИСТИКИ ---", flush=True)
+    print(f"--- 🦾 БОТ V59: ТРЁХУРОВНЕВЫЙ ФИЛЬТР ---", flush=True)
     load_data()
     
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True, args=['--no-sandbox'])
         context = await browser.new_context(user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
         page = await context.new_page()
-        await page.route("**/*", lambda route: route.abort() if route.request.resource_type in ["image", "font"] else route.continue_())
 
         while True:
             try:
-                print(f"\n📡 Мониторинг Flashscore...", flush=True)
+                print(f"\n📡 Мониторинг линии...", flush=True)
                 await page.goto("https://www.flashscore.com/hockey/?s=2", timeout=40000, wait_until="domcontentloaded")
-                await page.wait_for_selector(".event__stage", timeout=15000)
+                await page.wait_for_selector(".event__match", timeout=15000)
 
                 rows = await page.locator(".event__match").all()
-                live_count = 0
-                
                 for row in rows:
-                    stage_loc = row.locator(".event__stage")
-                    if await stage_loc.count() == 0: continue
-                    
-                    stage_text = (await stage_loc.inner_text()).lower()
-                    if not any(x in stage_text for x in ["period", "break", "перерыв", "1st"]): continue
-                    if any(x in stage_text for x in ["2nd", "3rd", "2-й", "3-й"]): continue
-                    
-                    live_count += 1
-                    m_id = (await row.get_attribute("id")).split("_")[-1]
-                    if m_id in TRACKED_MATCHES: continue
+                    try:
+                        m_id = (await row.get_attribute("id")).split("_")[-1]
+                        if m_id in TRACKED: continue
 
-                    # Только перерывы
-                    if "break" in stage_text or "перерыв" in stage_text:
+                        stage = (await row.locator(".event__stage").inner_text()).lower()
+                        if "break" not in stage and "перерыв" not in stage: continue
+
+                        # Счет (0:0, 1:0, 0:1)
                         sc_h = await row.locator(".event__score--home").inner_text()
                         sc_a = await row.locator(".event__score--away").inner_text()
-                        
-                        if sc_h.isdigit() and sc_a.isdigit() and (int(sc_h) + int(sc_a)) <= 1:
-                            home = await row.locator(".event__participant--home").inner_text()
-                            away = await row.locator(".event__participant--away").inner_text()
-                            print(f"   🎯 ПЕРЕРЫВ: {home} - {away} ({sc_h}:{sc_a}). Проверяю данные...", flush=True)
+                        if (int(sc_h) + int(sc_a)) > 1: continue
 
-                            det = await context.new_page()
+                        home = await row.locator(".event__participant--home").inner_text()
+                        away = await row.locator(".event__participant--away").inner_text()
+
+                        det = await context.new_page()
+                        try:
+                            await det.goto(f"https://www.flashscore.com/match/{m_id}/#/match-summary/match-statistics/0", timeout=25000)
+                            
+                            # Название лиги
+                            league = (await det.locator(".breadcrumb__item").last().inner_text()).strip()
+
+                            if league in BLACKLIST:
+                                print(f"   🚫 {league} в ЧЕРНОМ списке. Игнорирую.", flush=True)
+                                continue
+
+                            # 1. ПРОВЕРКА: Есть ли вообще вкладка статистики?
+                            tabs = await det.locator(".tabs__tab").all_inner_texts()
+                            has_stats_tab = any("Stat" in t or "Стат" in t for t in tabs)
+
+                            if not has_stats_tab:
+                                print(f"   ⚫ НЕТ СТАТИСТИКИ ВООБЩЕ. {league} -> ЧЕРНЫЙ СПИСОК", flush=True)
+                                BLACKLIST.add(league)
+                                save_json(BLACK_LIST, BLACKLIST)
+                                continue
+
+                            # 2. ПРОВЕРКА: Броски (Shots on Goal)
                             try:
-                                await det.goto(f"https://www.flashscore.com/match/{m_id}/#/match-summary/match-statistics/0", timeout=25000)
-                                await asyncio.sleep(5) # Даем стате прогрузиться
+                                await det.wait_for_selector(".stat__row", timeout=5000)
+                                content = await det.evaluate("document.body.innerText")
                                 
-                                # Берем весь текст страницы для диагностики
-                                st_text = await det.evaluate("document.body.innerText")
-                                
-                                # Ищем всё, что напоминает статку
-                                sh = re.search(r"(\d+)[\s\n]+(?:Shots on Goal|Броски в створ)[\s\n]+(\d+)", st_text, re.I)
-                                wh = re.search(r"(\d+)[\s\n]+(?:Penalties|Удаления)[\s\n]+(\d+)", st_text, re.I)
-                                pim = re.search(r"(\d+)[\s\n]+(?:PIM|Штрафное время)[\s\n]+(\d+)", st_text, re.I)
-
-                                if sh:
-                                    t_sh = int(sh.group(1)) + int(sh.group(2))
-                                    t_wh = (int(wh.group(1)) + int(wh.group(2))) if wh else 0
-                                    t_pim = (int(pim.group(1)) + int(pim.group(2))) if pim else 0
+                                if "Shots on Goal" in content or "Броски в створ" in content:
+                                    if league not in WHITELIST:
+                                        WHITELIST.add(league)
+                                        save_json(WHITE_LIST, WHITELIST)
+                                        print(f"   ⚪ {league} добавлена в БЕЛЫЙ СПИСОК", flush=True)
                                     
-                                    print(f"      📈 СТАТА НАЙДЕНА: Бр={t_sh}, Удаления={t_wh}, Штраф={t_pim}", flush=True)
-
-                                    if t_sh >= 13 and t_pim >= 2 and t_wh >= 1:
-                                        await send_tg(f"🚨 <b>СИГНАЛ P1</b>\n🤝 {home}-{away}\n🎯 Броски: {t_sh}\n⏳ Штраф: {t_pim}")
-                                        TRACKED_MATCHES[m_id] = True
-                                        save_data()
-                                        print("      ✅ СИГНАЛ ОТПРАВЛЕН!", flush=True)
-                                    else:
-                                        print(f"      ⚠️ Не подходит по критериям (Бр {t_sh}/13, Штр {t_pim}/2)", flush=True)
+                                    # ЛОГИКА СИГНАЛА
+                                    sh = re.search(r"(\d+)[\s\n]+(?:Shots on Goal|Броски в створ)[\s\n]+(\d+)", content, re.I)
+                                    if sh:
+                                        t_sh = int(sh.group(1)) + int(sh.group(2))
+                                        if t_sh >= 13:
+                                            # (Добавь сюда поиск удалений и штрафа из V58)
+                                            print(f"   ✅ СИГНАЛ: {home}-{away} (Броски: {t_sh})", flush=True)
+                                            # await send_tg(...) 
+                                            TRACKED[m_id] = True
+                                            save_json(DB_MATCHES, TRACKED)
                                 else:
-                                    # Если бросков нет - пишем, какие параметры вообще есть
-                                    found_params = re.findall(r"[A-Z][a-z\s]{3,20}", st_text)
-                                    print(f"      ❌ БРОСКИ НЕ НАЙДЕНЫ. Вижу на странице: {found_params[:5]}...", flush=True)
-                            except Exception as e:
-                                print(f"      ⚠️ Ошибка на странице матча: {e}", flush=True)
-                            finally:
-                                await det.close()
+                                    if league not in GREYLIST:
+                                        GREYLIST.add(league)
+                                        save_json(GREY_LIST, GREYLIST)
+                                        print(f"   🔘 {league} -> СЕРЫЙ СПИСОК (стата есть, бросков нет)", flush=True)
+                            except:
+                                # Если вкладка есть, но строки не прогрузились — это тоже Серый список
+                                if league not in GREYLIST:
+                                    GREYLIST.add(league)
+                                    save_json(GREY_LIST, GREYLIST)
+                                    print(f"   🔘 {league} -> СЕРЫЙ СПИСОК (не прогрузилось)", flush=True)
+                        finally:
+                            await det.close()
+                    except: continue
 
-                print(f"📊 В лайве: {live_count} | Жду 60 сек...", flush=True)
                 await asyncio.sleep(60)
             except Exception as e:
                 print(f"⚠️ Ошибка: {e}", flush=True)
