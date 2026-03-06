@@ -8,8 +8,9 @@ TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("CHANNEL_ID")
 TRACKED_MATCHES = set()
 
-API_DOMAIN = None
+EXACT_FEED_URL = None
 API_HEADERS = None
+API_DOMAIN = None
 
 async def send_tg(text):
     import aiohttp
@@ -19,79 +20,82 @@ async def send_tg(text):
         except: pass
 
 async def main():
-    print("--- ☢️ БОТ V106: NINJA SNIPER ---", flush=True)
-    global API_DOMAIN, API_HEADERS
+    print("--- ☢️ БОТ V107: AUTO-TARGETING (ХОККЕЙНЫЙ СНАЙПЕР) ---", flush=True)
+    global EXACT_FEED_URL, API_HEADERS, API_DOMAIN
     
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True, args=['--no-sandbox', '--disable-dev-shm-usage', '--disable-blink-features=AutomationControlled'])
         context = await browser.new_context(user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
         page = await context.new_page()
 
-        # 1. ПЕРЕХВАТЧИК СЕТИ
+        # 1. ПЕРЕХВАТЧИК: Ловим ИМЕННО хоккейную базу
         async def handle_request(request):
-            global API_DOMAIN, API_HEADERS
-            # Ищем запросы к ниндзя-доменам, в которых есть секретный ключ
+            global EXACT_FEED_URL, API_HEADERS, API_DOMAIN
             if "flashscore.ninja" in request.url and "x-fsign" in request.headers:
-                if not API_DOMAIN:
-                    # Вытаскиваем базовый домен (например, https://global.flashscore.ninja)
+                # 4 - это код хоккея у Flashscore. Ищем фид с хоккеем.
+                if "feed/f_4" in request.url and not EXACT_FEED_URL:
+                    EXACT_FEED_URL = request.url
+                    # Запоминаем базовый домен (global или 2) для статики
                     match = re.search(r"(https://[a-zA-Z0-9.-]+\.flashscore\.ninja)", request.url)
-                    if match:
-                        API_DOMAIN = match.group(1)
-                        API_HEADERS = {
-                            "x-fsign": request.headers["x-fsign"],
-                            "X-Requested-With": "XMLHttpRequest",
-                            "Referer": "https://www.flashscore.com/"
-                        }
-                        print(f"   🥷 Пойман сервер ниндзя: {API_DOMAIN}", flush=True)
-                        print(f"   🔑 Украден ключ: {API_HEADERS['x-fsign'][:10]}...", flush=True)
+                    if match: API_DOMAIN = match.group(1)
+                    
+                    API_HEADERS = {
+                        "x-fsign": request.headers["x-fsign"],
+                        "X-Requested-With": "XMLHttpRequest",
+                        "Referer": "https://www.flashscore.com/"
+                    }
+                    print(f"   🎯 Пойман URL базы хоккея: {EXACT_FEED_URL.split('/')[-1]}", flush=True)
 
         page.on("request", handle_request)
 
-        print("📡 Захожу на сайт, выслеживаю API...", flush=True)
+        print("📡 Захожу на сайт, выслеживаю хоккейный API...", flush=True)
         await page.goto("https://www.flashscore.com/hockey/?s=2", timeout=40000)
         
-        # Ждем поимки данных (даем скриптам 15 секунд на прогрузку)
+        # Ждем 15 секунд, чтобы точно поймать нужный фид
         for _ in range(15):
-            if API_DOMAIN and API_HEADERS: break
+            if EXACT_FEED_URL: break
             await asyncio.sleep(1)
 
-        if not API_DOMAIN:
-            print("❌ Не удалось поймать Ninja API. Перезапускаю...", flush=True)
+        if not EXACT_FEED_URL:
+            print("❌ Не удалось поймать хоккейный фид. Перезапускаю...", flush=True)
             await browser.close()
             return
 
-        print("✅ База данных взломана! Начинаю прямые запросы...", flush=True)
+        print("✅ Прицел захвачен! Начинаю сканирование...", flush=True)
 
         # 2. БЕСКОНЕЧНЫЙ ЦИКЛ API
         while True:
             try:
-                print("\n📡 Запрашиваю Live-матчи...", flush=True)
-                # Формируем URL лайва для хоккея
-                live_url = f"{API_DOMAIN}/2/x/feed/f_4_1_3_ru_1"
-                
-                response = await context.request.get(live_url, headers=API_HEADERS)
+                print("\n📡 Обновляю базу...", flush=True)
+                response = await context.request.get(EXACT_FEED_URL, headers=API_HEADERS)
                 text = await response.text()
                 
-                # Если сервер вернул 0, значит ключ устарел
                 if text == "0" or not text:
                     print("⚠️ Токен протух. Обновляю страницу...", flush=True)
-                    API_DOMAIN = None
+                    EXACT_FEED_URL = None
                     await page.reload(timeout=30000)
                     await asyncio.sleep(5)
                     continue
 
-                if "~AA÷" not in text:
-                    print("🤷‍♂️ Доступ есть, но лайв сейчас пуст.", flush=True)
-                    await asyncio.sleep(60)
-                    continue
-
                 matches = text.split("~AA÷")
-                print(f"📊 Найдено матчей в лайве: {len(matches)-1}", flush=True)
+                
+                # Подсчет ТОЛЬКО активных матчей в лайве (исключаем статус 1-Не начался, 3-Завершен, 4-Перенесен)
+                live_count = 0
+                for m in matches[1:]:
+                    ac_match = re.search(r"¬AC÷(\d+)¬", m)
+                    if ac_match:
+                        status = int(ac_match.group(1))
+                        if status not in [1, 3, 4]:
+                            live_count += 1
+                            
+                print(f"📊 Хоккея в лайве (идет игра + перерывы): {live_count}", flush=True)
 
                 for match_data in matches[1:]:
                     try:
                         m_id = match_data.split("¬")[0]
-                        if "¬AC÷36¬" not in match_data: continue # Код 36 = Перерыв P1
+                        
+                        # Нас интересует СТРОГО статус 36 (Перерыв после 1-го периода)
+                        if "¬AC÷36¬" not in match_data: continue 
                         if m_id in TRACKED_MATCHES: continue
 
                         home_match = re.search(r"AE÷([^¬]+)", match_data)
@@ -108,7 +112,7 @@ async def main():
 
                         print(f"   🎯 ПЕРЕРЫВ P1: {home} - {away} ({sc_h}:{sc_a}). Проверяю статку...", flush=True)
 
-                        # Статистика запрашивается с того же пойманного домена-ниндзя
+                        # Статистика тянется с того же домена-ниндзя
                         stat_url = f"{API_DOMAIN}/2/x/feed/df_st_1_{m_id}"
                         stat_response = await context.request.get(stat_url, headers=API_HEADERS)
                         stat_data = await stat_response.text()
@@ -143,6 +147,8 @@ async def main():
                     except Exception as e:
                         print(f"   ⚠️ Ошибка матча: {e}", flush=True)
 
+                # Спим перед следующим запросом к API
+                print("💤 Жду 60 секунд...", flush=True)
                 await asyncio.sleep(60)
             except Exception as e:
                 print(f"⚠️ Ошибка цикла: {e}", flush=True)
