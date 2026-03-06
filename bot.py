@@ -51,7 +51,7 @@ API_DOMAIN = None
 API_HEADERS = None
 
 async def main():
-    print("--- 🧠 БОТ-АРХИВАРИУС V5: ИДЕАЛЬНЫЙ РЕНТГЕН ---", flush=True)
+    print("--- 🧠 БОТ-АРХИВАРИУС V6: ЗОЛОТОЙ КЛЮЧ ---", flush=True)
     global API_DOMAIN, API_HEADERS, BLACKLIST, WHITELIST
     
     async with async_playwright() as p:
@@ -74,7 +74,7 @@ async def main():
                         "Referer": "https://www.flashscore.com/",
                         "Cache-Control": "no-cache"
                     }
-                    print("   🔑 API-Токен захвачен! Перехожу на рентген.", flush=True)
+                    print("   🔑 API-Токен успешно захвачен!", flush=True)
 
         page.on("request", token_handler)
 
@@ -88,7 +88,8 @@ async def main():
                 async def response_handler(response):
                     nonlocal captured_text
                     if captured_text: return
-                    if "flashscore.ninja" in response.url and ("feed/f_4" in response.url or "feed/r_4" in response.url):
+                    # Ищем любые ответы от базы, игнорируем запросы статистики
+                    if "flashscore.ninja" in response.url and "df_st" not in response.url:
                         if day > 0 and "f_4_0" in response.url:
                             return 
                         try:
@@ -98,6 +99,9 @@ async def main():
                         except: pass
 
                 page.on("response", response_handler)
+                
+                # Сбрасываем страницу, чтобы убить SPA-кэш Flashscore
+                await page.goto("about:blank")
                 await page.goto(f"https://www.flashscore.com/hockey/?d=-{day}", timeout=40000)
                 
                 for _ in range(15):
@@ -110,40 +114,39 @@ async def main():
                     print(f"❌ Не удалось поймать сырую базу для дня -{day}.", flush=True)
                     continue
 
-                # --- 1. ВЫТАСКИВАЕМ ПО 1 МАТЧУ ИЗ КАЖДОЙ ЛИГИ (БЕЗ ФИЛЬТРОВ) ---
-                match_ids_to_check = []
-                blocks = captured_text.split("~")
-                need_match = False
+                # --- 1. ПАРСИНГ ЛИГ НАПРЯМУЮ ИЗ ТЕКСТА БАЗЫ (МАГИЯ ЗДЕСЬ) ---
+                match_dict = {} # Словарь: Название лиги -> ID матча
+                blocks = captured_text.split("ZA÷")
                 
-                for block in blocks:
-                    if block.startswith("ZA÷"):
-                        need_match = True  # Увидели новую лигу, включаем "пылесос"
-                    elif block.startswith("AA÷") and need_match:
-                        m_id = block.split("¬")[0].replace("AA÷", "")
-                        if len(m_id) == 8:
-                            match_ids_to_check.append(m_id)
-                            need_match = False # Матч найден, выключаем до следующей лиги
+                for block in blocks[1:]:
+                    # Название лиги лежит прямо в начале блока!
+                    league_name = block.split("¬")[0].strip()
+                    
+                    # Ищем завершенные матчи внутри этого турнира
+                    matches = block.split("AA÷")[1:]
+                    m_id = None
+                    for m in matches:
+                        if "¬AC÷3¬" in m or "¬AC÷8¬" in m or "¬AC÷9¬" in m:
+                            m_id = m.split("¬")[0]
+                            if len(m_id) == 8:
+                                break
+                    
+                    # Если завершенных нет (редкость для архива), берем любой первый
+                    if not m_id and matches:
+                        m_id = matches[0].split("¬")[0]
+                        
+                    if m_id and len(m_id) == 8:
+                        match_dict[league_name] = m_id
 
-                print(f"✅ Найдено турниров в базе: {len(match_ids_to_check)}. Сканирую имена...", flush=True)
+                print(f"✅ Найдено лиг в базе: {len(match_dict)}. Сканирую статистику...", flush=True)
 
                 if not API_DOMAIN or not API_HEADERS:
                     print("⚠️ Нет API ключа, жду...", flush=True)
                     await asyncio.sleep(3)
 
-                # --- 2. РЕНТГЕН КАЖДОГО МАТЧА ЧЕРЕЗ API ---
-                for m_id in match_ids_to_check:
+                # --- 2. РЕНТГЕН БРОСКОВ ЧЕРЕЗ API ---
+                for league_name, m_id in match_dict.items():
                     try:
-                        # Узнаем НАСТОЯЩЕЕ имя лиги через сводку матча (SUI)
-                        sui_url = f"{API_DOMAIN}/2/x/feed/df_sui_1_{m_id}"
-                        sui_resp = await context.request.get(sui_url, headers=API_HEADERS)
-                        sui_text = await sui_resp.text()
-                        
-                        league_match = re.search(r"ZA÷([^¬]+)", sui_text)
-                        if not league_match:
-                            continue
-                            
-                        league_name = league_match.group(1).strip()
-
                         if league_name in BLACKLIST or league_name in WHITELIST:
                             continue
 
@@ -178,12 +181,13 @@ async def main():
                             save_list(BLACKLIST_FILE, BLACKLIST)
                             
                     except Exception as e:
-                        pass
+                        print(f"      ⚠️ Ошибка проверки статы матча {m_id} ({league_name}): {e}", flush=True)
                         
                     await asyncio.sleep(0.3) 
 
             except Exception as e:
                 print(f"🚨 ОШИБКА НА ДНЕ {day}: {e}", flush=True)
+                traceback.print_exc()
 
         print(f"\n🏁 ПУТЕШЕСТВИЕ ВО ВРЕМЕНИ ЗАВЕРШЕНО!")
         print(f"📊 Итоговые знания: {len(WHITELIST)} хороших лиг, {len(BLACKLIST)} мусорных.")
