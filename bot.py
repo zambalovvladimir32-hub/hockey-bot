@@ -1,4 +1,66 @@
-# 2. БЕСКОНЕЧНЫЙ ЦИКЛ API
+import asyncio
+import os
+import re
+from playwright.async_api import async_playwright
+
+# --- КОНФИГ ---
+TOKEN = os.getenv("TELEGRAM_TOKEN")
+CHAT_ID = os.getenv("CHANNEL_ID")
+TRACKED_MATCHES = set()
+
+EXACT_FEED_URL = None
+API_HEADERS = None
+API_DOMAIN = None
+
+async def send_tg(text):
+    import aiohttp
+    if not TOKEN or not CHAT_ID: return
+    async with aiohttp.ClientSession() as session:
+        try: await session.post(f"https://api.telegram.org/bot{TOKEN}/sendMessage", json={"chat_id": CHAT_ID, "text": text, "parse_mode": "HTML"})
+        except: pass
+
+async def main():
+    print("--- ☢️ БОТ V108: ИДЕАЛЬНЫЙ СНАЙПЕР ---", flush=True)
+    global EXACT_FEED_URL, API_HEADERS, API_DOMAIN
+    
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=True, args=['--no-sandbox', '--disable-dev-shm-usage', '--disable-blink-features=AutomationControlled'])
+        context = await browser.new_context(user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+        page = await context.new_page()
+
+        # 1. ПЕРЕХВАТЧИК СЕТИ
+        async def handle_request(request):
+            global EXACT_FEED_URL, API_HEADERS, API_DOMAIN
+            if "flashscore.ninja" in request.url and "x-fsign" in request.headers:
+                if "feed/f_4" in request.url and not EXACT_FEED_URL:
+                    EXACT_FEED_URL = request.url
+                    match = re.search(r"(https://[a-zA-Z0-9.-]+\.flashscore\.ninja)", request.url)
+                    if match: API_DOMAIN = match.group(1)
+                    
+                    API_HEADERS = {
+                        "x-fsign": request.headers["x-fsign"],
+                        "X-Requested-With": "XMLHttpRequest",
+                        "Referer": "https://www.flashscore.com/"
+                    }
+                    print(f"   🎯 Пойман URL базы: {EXACT_FEED_URL.split('/')[-1]}", flush=True)
+
+        page.on("request", handle_request)
+
+        print("📡 Захожу на сайт, выслеживаю API...", flush=True)
+        await page.goto("https://www.flashscore.com/hockey/?s=2", timeout=40000)
+        
+        for _ in range(15):
+            if EXACT_FEED_URL: break
+            await asyncio.sleep(1)
+
+        if not EXACT_FEED_URL:
+            print("❌ Не удалось поймать фид. Перезапускаю...", flush=True)
+            await browser.close()
+            return
+
+        print("✅ Прицел захвачен! Начинаю сканирование...", flush=True)
+
+        # 2. БЕСКОНЕЧНЫЙ ЦИКЛ API
         while True:
             try:
                 print("\n📡 Обновляю базу...", flush=True)
@@ -14,22 +76,21 @@
 
                 matches = text.split("~AA÷")
                 
-                # Считаем ТОЛЬКО реальный лайв (периоды и перерывы)
-                # 2 - идет игра, 36 - перерыв P1, 37 - перерыв P2, 38 - перерыв перед ОТ
-                live_statuses = [2, 36, 37, 38] 
+                # Считаем только матчи, которые реально идут сейчас (статусы: 2-идет, 36-перерыв P1, 37-перерыв P2, 38-перерыв перед ОТ, 39-овертайм, 40-буллиты)
+                live_statuses = [2, 36, 37, 38, 39, 40]
                 live_count = 0
                 for m in matches[1:]:
                     ac_match = re.search(r"¬AC÷(\d+)¬", m)
                     if ac_match and int(ac_match.group(1)) in live_statuses:
                         live_count += 1
-                            
-                print(f"📊 Реального хоккея в лайве: {live_count}", flush=True)
+                        
+                print(f"📊 Хоккея в лайве (реально идут на льду): {live_count}", flush=True)
 
                 for match_data in matches[1:]:
                     try:
                         m_id = match_data.split("¬")[0]
                         
-                        # ЖЕСТКИЙ ФИЛЬТР: Нас интересует СТРОГО статус 36 (Перерыв после 1-го периода)
+                        # Строго статус 36 (Перерыв после 1-го периода)
                         if "¬AC÷36¬" not in match_data: continue 
                         if m_id in TRACKED_MATCHES: continue
 
@@ -43,12 +104,11 @@
                         sc_h = int(sc_h_match.group(1)) if sc_h_match else 0
                         sc_a = int(sc_a_match.group(1)) if sc_a_match else 0
 
-                        # Фильтр на тотал меньше 1.5
+                        # Сумма голов не больше 1
                         if (sc_h + sc_a) > 1: continue
 
                         print(f"   🎯 ПЕРЕРЫВ P1: {home} - {away} ({sc_h}:{sc_a}). Проверяю статку...", flush=True)
 
-                        # Запрос статистики
                         stat_url = f"{API_DOMAIN}/2/x/feed/df_st_1_{m_id}"
                         stat_response = await context.request.get(stat_url, headers=API_HEADERS)
                         stat_data = await stat_response.text()
@@ -88,3 +148,6 @@
             except Exception as e:
                 print(f"⚠️ Ошибка цикла: {e}", flush=True)
                 await asyncio.sleep(20)
+
+if __name__ == "__main__":
+    asyncio.run(main())
