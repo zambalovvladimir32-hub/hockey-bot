@@ -7,13 +7,13 @@ from playwright.async_api import async_playwright
 # --- КОНФИГ ---
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("CHANNEL_ID")
-TRACKED_MATCHES = set()
 
 API_DOMAIN = None
 API_HEADERS = None
 FEED_URL = None
 
 BLACKLIST_FILE = "blacklist.json"
+WHITELIST_FILE = "whitelist.json"
 
 def load_list(filename):
     if os.path.exists(filename):
@@ -26,6 +26,7 @@ def save_list(filename, data):
         json.dump(list(data), f, ensure_ascii=False, indent=4)
 
 BLACKLIST = load_list(BLACKLIST_FILE)
+WHITELIST = load_list(WHITELIST_FILE)
 
 async def send_tg(text):
     import aiohttp
@@ -34,9 +35,14 @@ async def send_tg(text):
         try: await session.post(f"https://api.telegram.org/bot{TOKEN}/sendMessage", json={"chat_id": CHAT_ID, "text": text, "parse_mode": "HTML"})
         except: pass
 
+async def send_tg_chunked(text):
+    # Телеграм не пропускает сообщения длиннее 4096 символов, поэтому режем на куски
+    for i in range(0, len(text), 4000):
+        await send_tg(text[i:i+4000])
+
 async def main():
-    print("--- ☢️ БОТ V112: ULTIMATE SNIPER (ИДЕАЛЬНЫЙ БАЛАНС) ---", flush=True)
-    global API_DOMAIN, API_HEADERS, FEED_URL, BLACKLIST
+    print("--- 🧠 БОТ-АРХИВАРИУС: МАШИНА ВРЕМЕНИ (7 ДНЕЙ) ---", flush=True)
+    global API_DOMAIN, API_HEADERS, FEED_URL, BLACKLIST, WHITELIST
     
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True, args=['--no-sandbox', '--disable-dev-shm-usage', '--disable-blink-features=AutomationControlled'])
@@ -46,8 +52,8 @@ async def main():
         async def handle_request(request):
             global API_DOMAIN, API_HEADERS, FEED_URL
             if "flashscore.ninja" in request.url and "x-fsign" in request.headers:
-                # ВОЗВРАЩАЕМ МЯГКИЙ ПЕРЕХВАТ f_4
-                if "feed/f_4" in request.url and not FEED_URL:
+                # Ловим фиды дней (f_4 или r_4 для архивов), игнорируем запросы статистики (df_st)
+                if ("feed/f_4" in request.url or "feed/r_4" in request.url) and "df_st" not in request.url:
                     FEED_URL = request.url
                     match = re.search(r"(https://[a-zA-Z0-9.-]+\.flashscore\.ninja)", request.url)
                     if match: API_DOMAIN = match.group(1)
@@ -56,89 +62,63 @@ async def main():
                         "x-fsign": request.headers["x-fsign"],
                         "X-Requested-With": "XMLHttpRequest",
                         "Referer": "https://www.flashscore.com/",
-                        "Cache-Control": "no-cache",
-                        "Pragma": "no-cache"
+                        "Cache-Control": "no-cache"
                     }
-                    print(f"   🎯 Пойман URL базы: {FEED_URL.split('/')[-1]}", flush=True)
 
         page.on("request", handle_request)
 
-        print("📡 Захожу на сайт...", flush=True)
-        await page.goto("https://www.flashscore.com/hockey/?s=2", timeout=40000)
-        
-        for _ in range(15):
-            if FEED_URL: break
-            await asyncio.sleep(1)
+        # Проходим от сегодня (0) до 7 дней назад
+        for day in range(8):
+            FEED_URL = None # Сбрасываем URL для нового дня
+            
+            day_label = "СЕГОДНЯ" if day == 0 else f"{day} ДНЕЙ НАЗАД"
+            print(f"\n⏳ ПРЫЖОК ВО ВРЕМЕНИ: {day_label} (d=-{day})", flush=True)
+            
+            await page.goto(f"https://www.flashscore.com/hockey/?d=-{day}", timeout=40000)
+            
+            for _ in range(15):
+                if FEED_URL: break
+                await asyncio.sleep(1)
 
-        if not FEED_URL:
-            print("❌ Не удалось поймать фид. Перезапуск...")
-            await browser.close()
-            return
+            if not FEED_URL:
+                print(f"❌ Не удалось поймать фид для дня -{day}. Пропускаю...", flush=True)
+                continue
 
-        print(f"✅ Прицел захвачен! В Черном списке лиг: {len(BLACKLIST)}", flush=True)
+            print(f"✅ База поймана: {FEED_URL.split('/')[-1]}. Начинаю сканирование...", flush=True)
 
-        while True:
-            try:
-                print("\n📡 Обновляю базу...", flush=True)
-                response = await context.request.get(FEED_URL, headers=API_HEADERS)
-                text = await response.text()
-                
-                if text == "0" or not text:
-                    print("⚠️ Токен протух. Обновляю страницу...", flush=True)
-                    FEED_URL = None
-                    await page.reload(timeout=30000)
-                    await asyncio.sleep(5)
+            response = await context.request.get(FEED_URL, headers=API_HEADERS)
+            text = await response.text()
+            
+            blocks = text.split("~")
+            current_league = "Unknown League"
+            
+            for block in blocks:
+                if block.startswith("ZA÷"):
+                    league_match = re.search(r"ZA÷([^¬]+)", block)
+                    if league_match:
+                        current_league = league_match.group(1).strip()
                     continue
-
-                blocks = text.split("~")
-                live_count = 0
-                current_league = "Unknown League"
-                
-                for block in blocks:
-                    if block.startswith("ZA÷"):
-                        league_match = re.search(r"ZA÷([^¬]+)", block)
-                        if league_match:
-                            current_league = league_match.group(1).strip()
+                    
+                if block.startswith("AA÷"):
+                    # Ищем ТОЛЬКО завершенные матчи (статусы 3, 8, 9)
+                    if not re.search(r"¬AC÷[389]¬", block): continue 
+                    
+                    # Если лига уже проверена - пропускаем моментально
+                    if current_league in BLACKLIST or current_league in WHITELIST:
                         continue
-                        
-                    if block.startswith("AA÷"):
-                        ac_match = re.search(r"¬AC÷(\d+)¬", block)
-                        # ПРАВИЛЬНЫЕ хоккейные статусы: 12 (P1), 13 (P2), 14 (P3), 15 (OT), 16 (Pen), 36-38 (Перерывы)
-                        if ac_match and int(ac_match.group(1)) in [12, 13, 14, 15, 16, 36, 37, 38]:
-                            live_count += 1
-                            
-                        # ЖЕСТКИЙ ФИЛЬТР: Только перерыв после 1-го периода (статус 36)
-                        if "¬AC÷36¬" not in block: continue 
-                        
-                        m_id = block.split("¬")[0].replace("AA÷", "")
-                        if m_id in TRACKED_MATCHES: continue
-                        
-                        if current_league in BLACKLIST:
-                            continue
 
-                        home_match = re.search(r"AE÷([^¬]+)", block)
-                        away_match = re.search(r"AF÷([^¬]+)", block)
-                        home = home_match.group(1) if home_match else "Home"
-                        away = away_match.group(1) if away_match else "Away"
+                    m_id = block.split("¬")[0].replace("AA÷", "")
+                    print(f"   🔍 Изучаю новую лигу: 🏆 {current_league}", flush=True)
 
-                        sc_h_match = re.search(r"AG÷(\d+)", block)
-                        sc_a_match = re.search(r"AH÷(\d+)", block)
-                        sc_h = int(sc_h_match.group(1)) if sc_h_match else 0
-                        sc_a = int(sc_a_match.group(1)) if sc_a_match else 0
-
-                        if (sc_h + sc_a) > 1: continue
-
-                        print(f"   🎯 ПЕРЕРЫВ P1: {home} - {away} | 🏆 {current_league}", flush=True)
-
-                        stat_url = f"{API_DOMAIN}/2/x/feed/df_st_1_{m_id}"
+                    stat_url = f"{API_DOMAIN}/2/x/feed/df_st_1_{m_id}"
+                    try:
                         stat_response = await context.request.get(stat_url, headers=API_HEADERS)
                         stat_data = await stat_response.text()
 
                         if not stat_data or "SG÷" not in stat_data:
-                            print(f"      🗑 Нет статистики. Лига '{current_league}' отправлена в ЧЕРНЫЙ СПИСОК!", flush=True)
+                            print(f"      🗑 Пусто. '{current_league}' -> ЧЕРНЫЙ СПИСОК", flush=True)
                             BLACKLIST.add(current_league)
                             save_list(BLACKLIST_FILE, BLACKLIST)
-                            TRACKED_MATCHES.add(m_id)
                             continue
 
                         p1_data = None
@@ -152,39 +132,39 @@ async def main():
                             p1_data = stat_data
 
                         sh = re.search(r"SG÷(?:Shots on Goal|Броски в створ)¬SH÷(\d+)¬SI÷(\d+)", p1_data, re.IGNORECASE)
-                        wh = re.search(r"SG÷(?:Penalties|Удаления)¬SH÷(\d+)¬SI÷(\d+)", p1_data, re.IGNORECASE)
-                        pim = re.search(r"SG÷(?:PIM|Штрафное время)¬SH÷(\d+)¬SI÷(\d+)", p1_data, re.IGNORECASE)
 
                         if sh:
-                            t_sh = int(sh.group(1)) + int(sh.group(2))
-                            t_wh = int(wh.group(1)) + int(wh.group(2)) if wh else 0
-                            t_pim = int(pim.group(1)) + int(pim.group(2)) if pim else 0
-
-                            print(f"      📈 СТАТА (Только 1-й период): Бр={t_sh}, Удал={t_wh}, Штраф={t_pim}", flush=True)
-
-                            if t_sh >= 13 and t_pim >= 2 and t_wh >= 1:
-                                msg = (f"🚨 <b>СИГНАЛ P1 (ULTIMATE)</b>\n"
-                                       f"🏆 <b>{current_league}</b>\n"
-                                       f"🤝 {home} — {away} ({sc_h}:{sc_a})\n"
-                                       f"🎯 Броски (P1): {t_sh} | ❌ Удаления: {t_wh} | ⏳ Штраф: {t_pim} мин\n"
-                                       f"🔗 <a href='https://www.flashscore.com/match/{m_id}/#/match-summary/match-statistics/1'>Открыть статистику P1</a>")
-                                await send_tg(msg)
-                                print("      ✅ СИГНАЛ В КАНАЛЕ!", flush=True)
-                            else:
-                                print("      ⚠️ Стата не подходит по условиям.", flush=True)
+                            print(f"      ✅ Броски есть! '{current_league}' -> БЕЛЫЙ СПИСОК", flush=True)
+                            WHITELIST.add(current_league)
+                            save_list(WHITELIST_FILE, WHITELIST)
                         else:
-                            print(f"      🗑 В 1-м периоде нет бросков. Лига '{current_league}' в ЧЕРНЫЙ СПИСОК!", flush=True)
+                            print(f"      🗑 Бросков в P1 нет. '{current_league}' -> ЧЕРНЫЙ СПИСОК", flush=True)
                             BLACKLIST.add(current_league)
                             save_list(BLACKLIST_FILE, BLACKLIST)
                             
-                        TRACKED_MATCHES.add(m_id)
+                    except Exception as e:
+                        print(f"      ⚠️ Ошибка проверки статы: {e}", flush=True)
+                        
+                    await asyncio.sleep(0.3) # Анти-бан пауза
 
-                print(f"📊 Хоккея в лайве (идут на льду): {live_count}", flush=True)
-                print("💤 Жду 60 секунд...", flush=True)
-                await asyncio.sleep(60)
-            except Exception as e:
-                print(f"⚠️ Ошибка цикла: {e}", flush=True)
-                await asyncio.sleep(20)
+        print(f"\n🏁 ПУТЕШЕСТВИЕ ВО ВРЕМЕНИ ЗАВЕРШЕНО!")
+        print(f"📊 Итоговые знания: {len(WHITELIST)} хороших лиг, {len(BLACKLIST)} мусорных.")
+        print("📨 Отправляю отчет в Telegram...", flush=True)
+
+        # Формируем красивое сообщение для Telegram
+        if WHITELIST:
+            sorted_whitelist = sorted(list(WHITELIST))
+            tg_msg = f"🏆 <b>БЕЛЫЙ СПИСОК ЛИГ ({len(WHITELIST)} шт.)</b>\n<i>Собрано за 7 дней:</i>\n\n"
+            for league in sorted_whitelist:
+                tg_msg += f"✅ {league}\n"
+            
+            await send_tg_chunked(tg_msg)
+            print("✅ Отчет успешно отправлен в TG!", flush=True)
+        else:
+            await send_tg("🤷‍♂️ За 7 дней не найдено ни одной лиги с бросками (что-то пошло не так).")
+            print("⚠️ Белый список пуст.", flush=True)
+
+        await browser.close()
 
 if __name__ == "__main__":
     asyncio.run(main())
