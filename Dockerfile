@@ -10,8 +10,8 @@ COPY requirements.txt .
 # Устанавливаем библиотеки
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Копируем сам скрипт бота
+# Копируем все файлы проекта
 COPY . .
 
-# Запускаем (убедись, что твой файл называется main.py)
-CMD ["python", "main.py"]
+# Запускаем именно bot.py!
+CMD ["python", "bot.py"]
