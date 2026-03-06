@@ -8,7 +8,7 @@ API_HEADERS = None
 FEED_URL = None
 
 async def main():
-    print("--- ☢️ БОТ: ТЕСТ НА СЕГОДНЯШНИХ ЗАВЕРШЕННЫХ МАТЧАХ ---", flush=True)
+    print("--- ☢️ БОТ: ПОИСК МАТЧЕЙ С ПОЛНОЙ СТАТОЙ ---", flush=True)
     global API_DOMAIN, API_HEADERS, FEED_URL
     
     async with async_playwright() as p:
@@ -16,11 +16,9 @@ async def main():
         context = await browser.new_context(user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
         page = await context.new_page()
 
-        # 1. ПЕРЕХВАТЧИК: Ловим строго сегодняшний фид (f_4)
         async def handle_request(request):
             global API_DOMAIN, API_HEADERS, FEED_URL
             if "flashscore.ninja" in request.url and "x-fsign" in request.headers:
-                # Ищем ТОЛЬКО f_4
                 if "feed/f_4" in request.url and not FEED_URL:
                     FEED_URL = request.url
                     match = re.search(r"(https://[a-zA-Z0-9.-]+\.flashscore\.ninja)", request.url)
@@ -31,7 +29,6 @@ async def main():
                         "X-Requested-With": "XMLHttpRequest",
                         "Referer": "https://www.flashscore.com/"
                     }
-                    print(f"   🎯 Пойман URL базы: {FEED_URL.split('/')[-1]}", flush=True)
 
         page.on("request", handle_request)
 
@@ -43,7 +40,7 @@ async def main():
             await asyncio.sleep(1)
 
         if not FEED_URL:
-            print("❌ Не удалось поймать фид.", flush=True)
+            print("❌ Не удалось поймать фид.")
             await browser.close()
             return
 
@@ -52,15 +49,13 @@ async def main():
         text = await response.text()
         
         matches = text.split("~AA÷")
-        print(f"📊 Всего событий в фиде: {len(matches)-1}", flush=True)
+        print(f"📊 Ищу матчи с бросками среди {len(matches)-1} событий...", flush=True)
         
-        count = 0
+        found_stats = 0
         for match_data in matches[1:]:
-            # Проверяем, что это завершенный матч (статус 3, 8 или 9)
             if not re.search(r"¬AC÷[389]¬", match_data): continue 
             
             m_id = match_data.split("¬")[0]
-            # У Flashscore ID всегда ровно 8 символов. Отсекаем мусор.
             if len(m_id) != 8: continue
 
             home_match = re.search(r"AE÷([^¬]+)", match_data)
@@ -68,33 +63,31 @@ async def main():
             home = home_match.group(1) if home_match else "Home"
             away = away_match.group(1) if away_match else "Away"
             
-            print(f"\n   🏒 {home} - {away} (ID: {m_id})")
-            
             # Запрашиваем статистику
             stat_url = f"{API_DOMAIN}/2/x/feed/df_st_1_{m_id}"
             stat_response = await context.request.get(stat_url, headers=API_HEADERS)
             stat_data = await stat_response.text()
 
+            # Если стата есть, пытаемся вытащить данные (re.IGNORECASE игнорирует большие/маленькие буквы)
             if stat_data and "SG÷" in stat_data:
-                # Парсим броски, удаления, штрафы
-                sh = re.search(r"SG÷(?:Shots on Goal|Броски в створ)¬SH÷(\d+)¬SI÷(\d+)", stat_data)
-                wh = re.search(r"SG÷(?:Penalties|Удаления)¬SH÷(\d+)¬SI÷(\d+)", stat_data)
-                pim = re.search(r"SG÷(?:PIM|Штрафное время)¬SH÷(\d+)¬SI÷(\d+)", stat_data)
+                sh = re.search(r"SG÷(?:Shots on Goal|Броски в створ)¬SH÷(\d+)¬SI÷(\d+)", stat_data, re.IGNORECASE)
+                wh = re.search(r"SG÷(?:Penalties|Удаления)¬SH÷(\d+)¬SI÷(\d+)", stat_data, re.IGNORECASE)
+                pim = re.search(r"SG÷(?:PIM|Штрафное время)¬SH÷(\d+)¬SI÷(\d+)", stat_data, re.IGNORECASE)
 
-                t_sh = int(sh.group(1)) + int(sh.group(2)) if sh else 0
-                t_wh = int(wh.group(1)) + int(wh.group(2)) if wh else 0
-                t_pim = int(pim.group(1)) + int(pim.group(2)) if pim else 0
+                if sh:
+                    t_sh = int(sh.group(1)) + int(sh.group(2))
+                    t_wh = int(wh.group(1)) + int(wh.group(2)) if wh else 0
+                    t_pim = int(pim.group(1)) + int(pim.group(2)) if pim else 0
 
-                print(f"      📈 СТАТА: Броски={t_sh}, Удаления={t_wh}, Штраф={t_pim}")
-            else:
-                print("      🧐 Нет бросков в API для этого матча (возможно, низшая лига).")
-            
-            count += 1
-            if count >= 5: # Берем первые 5 матчей для теста
+                    print(f"\n   🏒 {home} - {away} (ID: {m_id})")
+                    print(f"      📈 СТАТА: Броски={t_sh}, Удаления={t_wh}, Штраф={t_pim}")
+                    found_stats += 1
+
+            if found_stats >= 3: # Стоп после 3 успешных находок
                 break
 
-        if count == 0:
-            print("\n🤷‍♂️ Не нашел ни одного завершенного матча. Ждем вечера!")
+        if found_stats == 0:
+            print("\n🤷‍♂️ Не нашел ни одного матча с бросками. Возможно, регулярку нужно подкрутить.")
 
         print("\n🏁 Тест парсера завершен!")
         await browser.close()
