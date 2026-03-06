@@ -37,7 +37,7 @@ def send_tg_sync(text):
         req = urllib.request.Request(url, data=data, headers={'Content-Type': 'application/json'})
         urllib.request.urlopen(req, timeout=5)
     except Exception as e:
-        print(f"⚠️ Ошибка отправки в TG: {e}")
+        pass
 
 async def send_tg(text):
     await asyncio.to_thread(send_tg_sync, text)
@@ -51,25 +51,18 @@ API_DOMAIN = None
 API_HEADERS = None
 
 async def main():
-    print("--- 🧠 БОТ-АРХИВАРИУС: ГИБРИДНЫЙ ПАРСЕР (ЗАЩИТА ОТ КРАШЕЙ) ---", flush=True)
+    print("--- 🧠 БОТ-АРХИВАРИУС V4: ЧИСТЫЙ РЕНТГЕН API ---", flush=True)
     global API_DOMAIN, API_HEADERS, BLACKLIST, WHITELIST
     
     async with async_playwright() as p:
-        # Добавил флаги для экономии памяти в Docker
         browser = await p.chromium.launch(
             headless=True, 
-            args=[
-                '--no-sandbox', 
-                '--disable-dev-shm-usage', 
-                '--disable-blink-features=AutomationControlled',
-                '--disable-gpu',
-                '--single-process' # Экономит ОЗУ
-            ]
+            args=['--no-sandbox', '--disable-dev-shm-usage', '--disable-blink-features=AutomationControlled']
         )
         context = await browser.new_context(user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
         page = await context.new_page()
 
-        async def handle_request(request):
+        async def token_handler(request):
             global API_DOMAIN, API_HEADERS
             if not API_HEADERS and "flashscore.ninja" in request.url and "x-fsign" in request.headers:
                 match = re.search(r"(https://[a-zA-Z0-9.-]+\.flashscore\.ninja)", request.url)
@@ -81,80 +74,91 @@ async def main():
                         "Referer": "https://www.flashscore.com/",
                         "Cache-Control": "no-cache"
                     }
-                    print("   🔑 API-Токен успешно пойман!", flush=True)
+                    print("   🔑 API-Токен захвачен! Перехожу на рентген.", flush=True)
 
-        page.on("request", handle_request)
+        page.on("request", token_handler)
 
         for day in range(8):
             try:
                 day_label = "СЕГОДНЯ" if day == 0 else f"{day} ДНЕЙ НАЗАД"
                 print(f"\n⏳ ПРЫЖОК ВО ВРЕМЕНИ: {day_label} (d=-{day})", flush=True)
                 
-                await page.goto(f"https://www.flashscore.com/hockey/?d=-{day}", timeout=60000)
+                captured_text = None
                 
-                # Ждем матчи с перехватом ошибки (если матчей нет, не крашимся)
-                try:
-                    await page.wait_for_selector('.event__match', timeout=15000)
-                    await asyncio.sleep(3) # Рендер DOM
-                except Exception:
-                    print(f"❌ Матчи на странице не прогрузились (или их нет). Идем дальше...", flush=True)
+                async def response_handler(response):
+                    nonlocal captured_text
+                    if captured_text: return
+                    if "flashscore.ninja" in response.url and ("feed/f_4" in response.url or "feed/r_4" in response.url):
+                        if day > 0 and "f_4_0" in response.url:
+                            return # Игнорим сегодняшний кэш для прошлых дней
+                        try:
+                            text = await response.text()
+                            if "ZA÷" in text and "AA÷" in text:
+                                captured_text = text
+                        except: pass
+
+                page.on("response", response_handler)
+                await page.goto(f"https://www.flashscore.com/hockey/?d=-{day}", timeout=40000)
+                
+                # Ждем перехвата базы
+                for _ in range(15):
+                    if captured_text: break
+                    await asyncio.sleep(1)
+                
+                page.remove_listener("response", response_handler)
+
+                if not captured_text:
+                    print(f"❌ Не удалось поймать сырую базу для дня -{day}.", flush=True)
                     continue
 
-                if not API_HEADERS:
-                    print("⚠️ Токен еще не пойман, жду 3 секунды...", flush=True)
+                # --- 1. ВЫТАКИВАЕМ ПО 1 МАТЧУ ИЗ КАЖДОЙ ЛИГИ ---
+                match_ids_to_check = []
+                za_blocks = captured_text.split("ZA÷")
+                
+                for block in za_blocks[1:]:
+                    matches = block.split("~AA÷")
+                    for m_block in matches[1:]:
+                        # Ищем только завершенные матчи (статусы 3, 8, 9)
+                        if "¬AC÷3¬" in m_block or "¬AC÷8¬" in m_block or "¬AC÷9¬" in m_block:
+                            m_id = m_block.split("¬")[0]
+                            if len(m_id) == 8:
+                                match_ids_to_check.append(m_id)
+                                break # Нашли один матч для турнира — идем к следующему турниру!
+
+                print(f"✅ Найдено турниров в базе: {len(match_ids_to_check)}. Сканирую имена...", flush=True)
+
+                if not API_DOMAIN or not API_HEADERS:
+                    print("⚠️ Нет API ключа, жду...", flush=True)
                     await asyncio.sleep(3)
 
-                # --- НЕУБИВАЕМЫЙ JS-ЭКСТРАКТОР ---
-                leagues_dict = await page.evaluate('''() => {
-                    const data = {};
-                    let currentLeague = "Unknown League";
-                    const elements = document.querySelectorAll('.event__header, .event__match');
-                    
-                    for (const el of elements) {
-                        if (el.classList.contains('event__header')) {
-                            let typeNode = el.querySelector('.event__title--type');
-                            let nameNode = el.querySelector('.event__title--name');
-                            
-                            if (typeNode && nameNode) {
-                                currentLeague = typeNode.innerText.trim() + ": " + nameNode.innerText.trim();
-                            } else {
-                                currentLeague = el.innerText.replace(/\\n/g, ' ').replace(/\s+/g, ' ').trim();
-                            }
-                        } else if (el.classList.contains('event__match')) {
-                            if (!data[currentLeague]) {
-                                let matchId = el.id; 
-                                if (matchId) {
-                                    let parts = matchId.split('_');
-                                    let m_id = parts[parts.length - 1];
-                                    if (m_id && m_id.length === 8) {
-                                        data[currentLeague] = m_id;
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    return data;
-                }''')
-
-                print(f"✅ Найдено уникальных лиг: {len(leagues_dict)}. Идет проверка...", flush=True)
-
-                for league, m_id in leagues_dict.items():
-                    if league in BLACKLIST or league in WHITELIST:
-                        continue
-
-                    print(f"   🔍 🏆 {league}", flush=True)
-
-                    if not API_DOMAIN or not API_HEADERS:
-                        continue
-
-                    stat_url = f"{API_DOMAIN}/2/x/feed/df_st_1_{m_id}"
+                # --- 2. РЕНТГЕН КАЖДОГО МАТЧА ЧЕРЕЗ API ---
+                for m_id in match_ids_to_check:
                     try:
-                        stat_response = await context.request.get(stat_url, headers=API_HEADERS)
-                        stat_data = await stat_response.text()
+                        # Узнаем НАСТОЯЩЕЕ имя лиги через сводку матча (SUI)
+                        sui_url = f"{API_DOMAIN}/2/x/feed/df_sui_1_{m_id}"
+                        sui_resp = await context.request.get(sui_url, headers=API_HEADERS)
+                        sui_text = await sui_resp.text()
+                        
+                        league_match = re.search(r"ZA÷([^¬]+)", sui_text)
+                        if not league_match:
+                            continue
+                            
+                        league_name = league_match.group(1).strip()
+
+                        # Если мы уже знаем эту лигу — моментально пропускаем!
+                        if league_name in BLACKLIST or league_name in WHITELIST:
+                            continue
+
+                        print(f"   🔍 🏆 {league_name}", flush=True)
+
+                        # Проверяем статистику бросков (ST)
+                        stat_url = f"{API_DOMAIN}/2/x/feed/df_st_1_{m_id}"
+                        stat_resp = await context.request.get(stat_url, headers=API_HEADERS)
+                        stat_data = await stat_resp.text()
 
                         if not stat_data or "SG÷" not in stat_data:
                             print(f"      🗑 Пусто -> ЧС", flush=True)
-                            BLACKLIST.add(league)
+                            BLACKLIST.add(league_name)
                             save_list(BLACKLIST_FILE, BLACKLIST)
                             continue
 
@@ -169,24 +173,21 @@ async def main():
 
                         if sh:
                             print(f"      ✅ Броски есть! -> БЕЛЫЙ СПИСОК", flush=True)
-                            WHITELIST.add(league)
+                            WHITELIST.add(league_name)
                             save_list(WHITELIST_FILE, WHITELIST)
                         else:
                             print(f"      🗑 Нет бросков -> ЧС", flush=True)
-                            BLACKLIST.add(league)
+                            BLACKLIST.add(league_name)
                             save_list(BLACKLIST_FILE, BLACKLIST)
                             
                     except Exception as e:
-                        print(f"      ⚠️ Ошибка проверки API: {e}", flush=True)
+                        print(f"      ⚠️ Ошибка проверки API матча {m_id}: {e}", flush=True)
                         
-                    await asyncio.sleep(0.3) 
+                    await asyncio.sleep(0.3) # Анти-бан пауза
 
             except Exception as e:
-                print(f"🚨 КРИТИЧЕСКАЯ ОШИБКА НА ДНЕ {day}: {e}", flush=True)
+                print(f"🚨 ОШИБКА НА ДНЕ {day}: {e}", flush=True)
                 traceback.print_exc()
-                # Пересоздаем страницу на случай полного зависания вкладки
-                await page.close()
-                page = await context.new_page()
 
         print(f"\n🏁 ПУТЕШЕСТВИЕ ВО ВРЕМЕНИ ЗАВЕРШЕНО!")
         print(f"📊 Итоговые знания: {len(WHITELIST)} хороших лиг, {len(BLACKLIST)} мусорных.")
@@ -207,9 +208,4 @@ async def main():
         await browser.close()
 
 if __name__ == "__main__":
-    try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        print("Остановлено вручную.")
-    except Exception as e:
-        print(f"ФАТАЛЬНЫЙ КРАШ: {e}")
+    asyncio.run(main())
