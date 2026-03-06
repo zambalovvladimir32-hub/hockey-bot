@@ -30,7 +30,6 @@ def save_list(filename, data):
 BLACKLIST = load_list(BLACKLIST_FILE)
 WHITELIST = load_list(WHITELIST_FILE)
 
-# Отправка в TG через стандартную библиотеку (без aiohttp)
 def send_tg_sync(text):
     if not TOKEN or not CHAT_ID: return
     try:
@@ -50,7 +49,7 @@ async def send_tg_chunked(text):
         await asyncio.sleep(1)
 
 async def main():
-    print("--- 🧠 БОТ-АРХИВАРИУС: МАШИНА ВРЕМЕНИ (7 ДНЕЙ) ---", flush=True)
+    print("--- 🧠 БОТ-АРХИВАРИУС: МАШИНА ВРЕМЕНИ (ИСПРАВЛЕННАЯ БАЗА) ---", flush=True)
     global API_DOMAIN, API_HEADERS, FEED_URL, TARGET_FEED, BLACKLIST, WHITELIST
     
     async with async_playwright() as p:
@@ -59,9 +58,9 @@ async def main():
         page = await context.new_page()
 
         async def handle_request(request):
-            global API_DOMAIN, API_HEADERS, FEED_URL
+            global API_DOMAIN, API_HEADERS, FEED_URL, TARGET_FEED
             if "flashscore.ninja" in request.url and "x-fsign" in request.headers:
-                # Ловим строго нужный фид (f_4 для сегодня, r_4 для прошлого)
+                # Ловим строго полный фид нужного дня (например, f_4_-1)
                 if TARGET_FEED in request.url and "df_st" not in request.url and not FEED_URL:
                     FEED_URL = request.url
                     match = re.search(r"(https://[a-zA-Z0-9.-]+\.flashscore\.ninja)", request.url)
@@ -79,7 +78,10 @@ async def main():
 
         for day in range(8):
             FEED_URL = None
-            TARGET_FEED = "feed/f_4" if day == 0 else "feed/r_4"
+            
+            # Формируем правильную маску: для 0 это f_4_0, для 1 это f_4_-1 и т.д.
+            day_offset = f"-{day}" if day > 0 else "0"
+            TARGET_FEED = f"feed/f_4_{day_offset}"
             
             day_label = "СЕГОДНЯ" if day == 0 else f"{day} ДНЕЙ НАЗАД"
             print(f"\n⏳ ПРЫЖОК ВО ВРЕМЕНИ: {day_label} (d=-{day})", flush=True)
@@ -91,7 +93,7 @@ async def main():
                 await asyncio.sleep(1)
 
             if not FEED_URL:
-                print(f"❌ Не удалось поймать фид для дня -{day}. Пропускаю...", flush=True)
+                print(f"❌ Не удалось поймать фид для дня -{day} ({TARGET_FEED}). Пропускаю...", flush=True)
                 continue
 
             print(f"✅ База поймана: {FEED_URL.split('/')[-1]}. Начинаю сканирование...", flush=True)
@@ -103,6 +105,7 @@ async def main():
             current_league = "Unknown League"
             
             for block in blocks:
+                # В полных базах названия лиг всегда есть!
                 if block.startswith("ZA÷"):
                     league_match = re.search(r"ZA÷([^¬]+)", block)
                     if league_match:
