@@ -9,7 +9,7 @@ API_HEADERS = None
 RESULTS_FEED_URL = None
 
 async def main():
-    print("--- ☢️ БОТ: ТЕСТ ПАРСЕРА НА АРХИВЕ ---", flush=True)
+    print("--- ☢️ БОТ: ТЕСТ АРХИВА (ИСПРАВЛЕННЫЙ) ---", flush=True)
     global API_DOMAIN, API_HEADERS, RESULTS_FEED_URL
     
     async with async_playwright() as p:
@@ -17,11 +17,12 @@ async def main():
         context = await browser.new_context(user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
         page = await context.new_page()
 
-        # 1. ПЕРЕХВАТЧИК: Ловим базу завершенных матчей
+        # 1. ПЕРЕХВАТЧИК: Ловим любой хоккейный фид (сегодня или архив)
         async def handle_request(request):
             global API_DOMAIN, API_HEADERS, RESULTS_FEED_URL
             if "flashscore.ninja" in request.url and "x-fsign" in request.headers:
-                if "feed/f_4" in request.url and not RESULTS_FEED_URL:
+                # Ищем f_4 (сегодня) или r_4 (вчера/результаты)
+                if ("feed/f_4" in request.url or "feed/r_4" in request.url) and not RESULTS_FEED_URL:
                     RESULTS_FEED_URL = request.url
                     match = re.search(r"(https://[a-zA-Z0-9.-]+\.flashscore\.ninja)", request.url)
                     if match: API_DOMAIN = match.group(1)
@@ -31,31 +32,29 @@ async def main():
                         "X-Requested-With": "XMLHttpRequest",
                         "Referer": "https://www.flashscore.com/"
                     }
-                    print(f"   🎯 Пойман URL архива: {RESULTS_FEED_URL.split('/')[-1]}", flush=True)
+                    print(f"   🎯 Пойман URL базы: {RESULTS_FEED_URL.split('/')[-1]}", flush=True)
 
         page.on("request", handle_request)
 
-        print("📡 Захожу на вкладку РЕЗУЛЬТАТЫ...", flush=True)
-        # Идем именно на вкладку results
-        await page.goto("https://www.flashscore.com/hockey/results/", timeout=40000)
+        print("📡 Захожу на ГЛАВНУЮ страницу хоккея (там есть завершенные матчи за сегодня)...", flush=True)
+        # Обрати внимание: мы убрали ?s=2 в конце, чтобы загрузить ВСЕ матчи дня
+        await page.goto("https://www.flashscore.com/hockey/", timeout=40000)
         
         for _ in range(15):
             if RESULTS_FEED_URL: break
             await asyncio.sleep(1)
 
         if not RESULTS_FEED_URL:
-            print("❌ Не удалось поймать архивный фид.", flush=True)
+            print("❌ Не удалось поймать фид.", flush=True)
             await browser.close()
             return
 
-        print("\n✅ Качаю базу завершенных матчей...", flush=True)
+        print("\n✅ Качаю базу...", flush=True)
         response = await context.request.get(RESULTS_FEED_URL, headers=API_HEADERS)
         text = await response.text()
         
         matches = text.split("~AA÷")
-        print(f"📊 Найдено матчей в архиве: {len(matches)-1}", flush=True)
-
-        # Берем ровно 5 завершенных матчей для теста
+        
         count = 0
         for match_data in matches[1:]:
             # Ищем статус 3 (Матч завершен)
@@ -75,6 +74,7 @@ async def main():
             stat_data = await stat_response.text()
 
             if stat_data and "SG÷" in stat_data:
+                # Парсим броски, удаления, штрафы
                 sh = re.search(r"SG÷(?:Shots on Goal|Броски в створ)¬SH÷(\d+)¬SI÷(\d+)", stat_data)
                 wh = re.search(r"SG÷(?:Penalties|Удаления)¬SH÷(\d+)¬SI÷(\d+)", stat_data)
                 pim = re.search(r"SG÷(?:PIM|Штрафное время)¬SH÷(\d+)¬SI÷(\d+)", stat_data)
@@ -83,15 +83,18 @@ async def main():
                 t_wh = int(wh.group(1)) + int(wh.group(2)) if wh else 0
                 t_pim = int(pim.group(1)) + int(pim.group(2)) if pim else 0
 
-                print(f"      📈 СТАТА (Весь матч): Броски={t_sh}, Удаления={t_wh}, Штраф={t_pim}")
+                print(f"      📈 СТАТА: Броски={t_sh}, Удаления={t_wh}, Штраф={t_pim}")
             else:
-                print("      🧐 Нет детальной статистики для этого матча (низшая лига / товарняк).")
+                print("      🧐 Нет детальной статистики в API (возможно, это любители).")
             
             count += 1
-            if count >= 5:
+            if count >= 5: # Берем первые 5 матчей для теста
                 break
 
-        print("\n🏁 Тест парсера статистики успешно завершен!")
+        if count == 0:
+            print("\n🤷‍♂️ Не нашел ни одного завершенного матча. Возможно, в этом фиде их нет.")
+
+        print("\n🏁 Тест парсера статистики завершен!")
         await browser.close()
 
 if __name__ == "__main__":
