@@ -44,7 +44,7 @@ async def send_tg_chunked(text):
         await asyncio.sleep(1)
 
 async def main():
-    print("--- 🧠 БОТ-АРХИВАРИУС: БРОНЕБОЙНЫЙ РАДАР (7 ДНЕЙ) ---", flush=True)
+    print("--- 🧠 БОТ-АРХИВАРИУС: ТИТАНОВАЯ ВЕРСИЯ (7 ДНЕЙ) ---", flush=True)
     global BLACKLIST, WHITELIST
     
     async with async_playwright() as p:
@@ -53,18 +53,19 @@ async def main():
         page = await context.new_page()
 
         for day in range(8):
-            # Контейнер для захваченных данных этого дня
             captured = {"text": None, "domain": None, "headers": None}
 
-            # Хитрый перехватчик: ловим ОТВЕТЫ, проверяем их начинку
             async def response_handler(response):
-                if captured["text"]: return # Если уже поймали нужный файл - игнорим остальные
+                if captured["text"]: return 
                 
                 if "flashscore.ninja" in response.url and ("feed/f_4" in response.url or "feed/r_4" in response.url):
+                    # МАГИЯ ЗДЕСЬ: Игнорируем сегодняшнюю базу, если ищем прошлые дни
+                    if day > 0 and "f_4_0" in response.url:
+                        return 
+                        
                     try:
                         text = await response.text()
-                        # Ищем файл, в котором точно есть и Лиги (ZA) и Матчи (AA)
-                        if "ZA÷" in text and "AA÷" in text:
+                        if "AA÷" in text:
                             captured["text"] = text
                             req = response.request
                             match = re.search(r"(https://[a-zA-Z0-9.-]+\.flashscore\.ninja)", req.url)
@@ -75,11 +76,10 @@ async def main():
                                 "X-Requested-With": "XMLHttpRequest",
                                 "Referer": "https://www.flashscore.com/"
                             }
-                            print(f"   🎯 Пойман правильный файл: {response.url.split('/')[-1]}", flush=True)
+                            print(f"   🎯 Пойман правильный архив: {response.url.split('/')[-1]}", flush=True)
                     except:
                         pass
 
-            # Вешаем слушателя
             page.on("response", response_handler)
             
             day_label = "СЕГОДНЯ" if day == 0 else f"{day} ДНЕЙ НАЗАД"
@@ -87,16 +87,14 @@ async def main():
             
             await page.goto(f"https://www.flashscore.com/hockey/?d=-{day}", timeout=40000)
             
-            # Ждем, пока перехватчик поймает нужный кусок
-            for _ in range(15):
+            for _ in range(20):
                 if captured["text"]: break
                 await asyncio.sleep(1)
 
-            # Снимаем слушателя, чтобы не мешал следующему дню
             page.remove_listener("response", response_handler)
 
             if not captured["text"]:
-                print(f"❌ Не удалось поймать полноценную базу для дня -{day}. Идем дальше...", flush=True)
+                print(f"❌ Не удалось поймать архив для дня -{day}. Пропускаю...", flush=True)
                 continue
 
             print(f"✅ База загружена! Начинаю сканирование...", flush=True)
@@ -113,11 +111,29 @@ async def main():
                     
                 if block.startswith("AA÷"):
                     if not re.search(r"¬AC÷[389]¬", block): continue 
+
+                    m_id = block.split("¬")[0].replace("AA÷", "")
                     
+                    # --- РЕЗЕРВНЫЙ ПОИСК ЛИГИ ---
+                    # Если база скрыла название лиги, делаем точечный запрос к матчу и узнаем его
+                    if current_league == "Unknown League":
+                        sui_url = f"{captured['domain']}/2/x/feed/df_sui_1_{m_id}"
+                        try:
+                            sui_resp = await context.request.get(sui_url, headers=captured["headers"])
+                            sui_text = await sui_resp.text()
+                            l_match = re.search(r"ZA÷([^¬]+)", sui_text)
+                            if l_match:
+                                current_league = l_match.group(1).strip()
+                        except:
+                            pass
+                    
+                    if current_league == "Unknown League":
+                        continue # Если даже так не нашли - пропускаем от греха подальше
+                    
+                    # Теперь, когда лига точно известна, проверяем списки
                     if current_league in BLACKLIST or current_league in WHITELIST:
                         continue
 
-                    m_id = block.split("¬")[0].replace("AA÷", "")
                     print(f"   🔍 Изучаю новую лигу: 🏆 {current_league}", flush=True)
 
                     stat_url = f"{captured['domain']}/2/x/feed/df_st_1_{m_id}"
@@ -170,7 +186,7 @@ async def main():
             await send_tg_chunked(tg_msg)
             print("✅ Отчет успешно отправлен в TG!", flush=True)
         else:
-            await send_tg("🤷‍♂️ За 7 дней не найдено ни одной лиги.")
+            await send_tg("🤷‍♂️ За 7 дней не найдено ни одной хорошей лиги.")
             print("⚠️ Белый список пуст.", flush=True)
 
         await browser.close()
