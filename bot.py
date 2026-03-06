@@ -2,6 +2,7 @@ import asyncio
 import os
 import re
 import json
+import urllib.request
 from playwright.async_api import async_playwright
 
 # --- КОНФИГ ---
@@ -11,6 +12,7 @@ CHAT_ID = os.getenv("CHANNEL_ID")
 API_DOMAIN = None
 API_HEADERS = None
 FEED_URL = None
+TARGET_FEED = ""
 
 BLACKLIST_FILE = "blacklist.json"
 WHITELIST_FILE = "whitelist.json"
@@ -28,21 +30,28 @@ def save_list(filename, data):
 BLACKLIST = load_list(BLACKLIST_FILE)
 WHITELIST = load_list(WHITELIST_FILE)
 
-async def send_tg(text):
-    import aiohttp
+# Отправка в TG через стандартную библиотеку (без aiohttp)
+def send_tg_sync(text):
     if not TOKEN or not CHAT_ID: return
-    async with aiohttp.ClientSession() as session:
-        try: await session.post(f"https://api.telegram.org/bot{TOKEN}/sendMessage", json={"chat_id": CHAT_ID, "text": text, "parse_mode": "HTML"})
-        except: pass
+    try:
+        url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
+        data = json.dumps({"chat_id": CHAT_ID, "text": text, "parse_mode": "HTML"}).encode('utf-8')
+        req = urllib.request.Request(url, data=data, headers={'Content-Type': 'application/json'})
+        urllib.request.urlopen(req, timeout=5)
+    except Exception as e:
+        print(f"⚠️ Ошибка отправки в TG: {e}")
+
+async def send_tg(text):
+    await asyncio.to_thread(send_tg_sync, text)
 
 async def send_tg_chunked(text):
-    # Телеграм не пропускает сообщения длиннее 4096 символов, поэтому режем на куски
     for i in range(0, len(text), 4000):
         await send_tg(text[i:i+4000])
+        await asyncio.sleep(1)
 
 async def main():
     print("--- 🧠 БОТ-АРХИВАРИУС: МАШИНА ВРЕМЕНИ (7 ДНЕЙ) ---", flush=True)
-    global API_DOMAIN, API_HEADERS, FEED_URL, BLACKLIST, WHITELIST
+    global API_DOMAIN, API_HEADERS, FEED_URL, TARGET_FEED, BLACKLIST, WHITELIST
     
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True, args=['--no-sandbox', '--disable-dev-shm-usage', '--disable-blink-features=AutomationControlled'])
@@ -52,8 +61,8 @@ async def main():
         async def handle_request(request):
             global API_DOMAIN, API_HEADERS, FEED_URL
             if "flashscore.ninja" in request.url and "x-fsign" in request.headers:
-                # Ловим фиды дней (f_4 или r_4 для архивов), игнорируем запросы статистики (df_st)
-                if ("feed/f_4" in request.url or "feed/r_4" in request.url) and "df_st" not in request.url:
+                # Ловим строго нужный фид (f_4 для сегодня, r_4 для прошлого)
+                if TARGET_FEED in request.url and "df_st" not in request.url and not FEED_URL:
                     FEED_URL = request.url
                     match = re.search(r"(https://[a-zA-Z0-9.-]+\.flashscore\.ninja)", request.url)
                     if match: API_DOMAIN = match.group(1)
@@ -62,14 +71,15 @@ async def main():
                         "x-fsign": request.headers["x-fsign"],
                         "X-Requested-With": "XMLHttpRequest",
                         "Referer": "https://www.flashscore.com/",
-                        "Cache-Control": "no-cache"
+                        "Cache-Control": "no-cache",
+                        "Pragma": "no-cache"
                     }
 
         page.on("request", handle_request)
 
-        # Проходим от сегодня (0) до 7 дней назад
         for day in range(8):
-            FEED_URL = None # Сбрасываем URL для нового дня
+            FEED_URL = None
+            TARGET_FEED = "feed/f_4" if day == 0 else "feed/r_4"
             
             day_label = "СЕГОДНЯ" if day == 0 else f"{day} ДНЕЙ НАЗАД"
             print(f"\n⏳ ПРЫЖОК ВО ВРЕМЕНИ: {day_label} (d=-{day})", flush=True)
@@ -100,10 +110,8 @@ async def main():
                     continue
                     
                 if block.startswith("AA÷"):
-                    # Ищем ТОЛЬКО завершенные матчи (статусы 3, 8, 9)
                     if not re.search(r"¬AC÷[389]¬", block): continue 
                     
-                    # Если лига уже проверена - пропускаем моментально
                     if current_league in BLACKLIST or current_league in WHITELIST:
                         continue
 
@@ -145,13 +153,12 @@ async def main():
                     except Exception as e:
                         print(f"      ⚠️ Ошибка проверки статы: {e}", flush=True)
                         
-                    await asyncio.sleep(0.3) # Анти-бан пауза
+                    await asyncio.sleep(0.3) 
 
         print(f"\n🏁 ПУТЕШЕСТВИЕ ВО ВРЕМЕНИ ЗАВЕРШЕНО!")
         print(f"📊 Итоговые знания: {len(WHITELIST)} хороших лиг, {len(BLACKLIST)} мусорных.")
         print("📨 Отправляю отчет в Telegram...", flush=True)
 
-        # Формируем красивое сообщение для Telegram
         if WHITELIST:
             sorted_whitelist = sorted(list(WHITELIST))
             tg_msg = f"🏆 <b>БЕЛЫЙ СПИСОК ЛИГ ({len(WHITELIST)} шт.)</b>\n<i>Собрано за 7 дней:</i>\n\n"
@@ -161,7 +168,7 @@ async def main():
             await send_tg_chunked(tg_msg)
             print("✅ Отчет успешно отправлен в TG!", flush=True)
         else:
-            await send_tg("🤷‍♂️ За 7 дней не найдено ни одной лиги с бросками (что-то пошло не так).")
+            await send_tg("🤷‍♂️ За 7 дней не найдено ни одной лиги.")
             print("⚠️ Белый список пуст.", flush=True)
 
         await browser.close()
