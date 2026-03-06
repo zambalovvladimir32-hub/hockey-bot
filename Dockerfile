@@ -1,16 +1,17 @@
-# Берем официальный образ со всеми установленными библиотеками
-FROM mcr.microsoft.com/playwright/python:v1.50.0-jammy
+# Берем легкую и быструю версию Python
+FROM python:3.11-slim
 
+# Создаем рабочую папку
 WORKDIR /app
 
-# Ставим нужные библиотеки
+# Копируем список библиотек (наш curl_cffi)
 COPY requirements.txt .
+
+# Устанавливаем библиотеки
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Принудительно ставим сам браузер внутри сервера
-RUN playwright install chromium
-
+# Копируем сам скрипт бота
 COPY . .
 
-# Команда для запуска нашего парсера
+# Запускаем (убедись, что твой файл называется main.py)
 CMD ["python", "main.py"]
