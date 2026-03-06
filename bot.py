@@ -29,10 +29,14 @@ def save_list(filename, data):
 BLACKLIST = load_list(BLACKLIST_FILE)
 WHITELIST = load_list(WHITELIST_FILE)
 
-# Если в прошлом запуске NHL или другие топы улетели в ЧС по ошибке - удаляем их оттуда
-for false_negative in ["USA: NHL", "USA: AHL", "SWEDEN: SHL"]:
+# 🛠 АМНИСТИЯ: Убираем топовые лиги из ЧС, если они попали туда из-за бага с будущими матчами
+amnestied = False
+for false_negative in ["USA: NHL", "USA: AHL", "SWEDEN: SHL", "CANADA: OHL", "CANADA: QMJHL", "CANADA: WHL"]:
     if false_negative in BLACKLIST:
         BLACKLIST.remove(false_negative)
+        amnestied = True
+if amnestied:
+    save_list(BLACKLIST_FILE, BLACKLIST)
 
 def send_tg_sync(text):
     if not TOKEN or not CHAT_ID: return
@@ -56,7 +60,7 @@ API_DOMAIN = None
 API_HEADERS = None
 
 async def main():
-    print("--- 🧠 БОТ-АРХИВАРИУС V7: АБСОЛЮТНОЕ ОРУЖИЕ ---", flush=True)
+    print("--- 🧠 БОТ-АРХИВАРИУС V8: ИДЕАЛЬНЫЙ API-ПАРСЕР ---", flush=True)
     global API_DOMAIN, API_HEADERS, BLACKLIST, WHITELIST
     
     async with async_playwright() as p:
@@ -88,67 +92,72 @@ async def main():
                 day_label = "СЕГОДНЯ" if day == 0 else f"{day} ДНЕЙ НАЗАД"
                 print(f"\n⏳ ПРЫЖОК ВО ВРЕМЕНИ: {day_label} (d=-{day})", flush=True)
                 
-                await page.goto(f"https://www.flashscore.com/hockey/?d=-{day}", timeout=60000)
+                captured_text = None
                 
-                try:
-                    await page.wait_for_selector('.event__match', timeout=15000)
-                    await asyncio.sleep(2)
-                except:
-                    print(f"❌ На странице нет матчей для дня -{day}.", flush=True)
+                async def response_handler(response):
+                    nonlocal captured_text
+                    if captured_text: return
+                    
+                    if "flashscore.ninja" in response.url and "df_st" not in response.url:
+                        # Игнорируем сегодняшний кэш для прошлых дней
+                        if day > 0 and "f_4_0" in response.url:
+                            return 
+                        try:
+                            text = await response.text()
+                            if "ZA÷" in text and "AA÷" in text:
+                                captured_text = text
+                        except: pass
+
+                page.on("response", response_handler)
+                
+                # Убиваем SPA-кэш страницы
+                await page.goto("about:blank")
+                await page.goto(f"https://www.flashscore.com/hockey/?d=-{day}", timeout=40000)
+                
+                for _ in range(15):
+                    if captured_text: break
+                    await asyncio.sleep(1)
+                
+                page.remove_listener("response", response_handler)
+
+                if not captured_text:
+                    print(f"❌ Не удалось поймать сырую базу для дня -{day}.", flush=True)
                     continue
 
-                if not API_HEADERS:
-                    print("⚠️ Токен еще не пойман, жду...", flush=True)
+                # --- 1. ПАРСИНГ ЛИГ НАПРЯМУЮ ИЗ ТЕКСТА БАЗЫ (ЖЕСТКО ЗАВЕРШЕННЫЕ) ---
+                match_dict = {} 
+                blocks = captured_text.split("ZA÷")
+                
+                for block in blocks[1:]:
+                    league_name = block.split("¬")[0].strip()
+                    matches = block.split("AA÷")[1:]
+                    m_id = None
+                    
+                    for m in matches:
+                        # ЖЕСТКАЯ ПРОВЕРКА: Только статусы 3, 8, 9, 10, 11 (сыгранные)
+                        if any(f"¬AC÷{s}¬" in m for s in [3, 8, 9, 10, 11]):
+                            m_id = m.split("¬")[0]
+                            if len(m_id) == 8:
+                                break
+                    
+                    # НИКАКИХ КОСТЫЛЕЙ! Если завершенных матчей нет - мы игнорируем эту лигу на сегодня.
+                    if m_id and len(m_id) == 8:
+                        match_dict[league_name] = m_id
+
+                print(f"✅ Найдено сыгранных лиг: {len(match_dict)}. Сканирую статистику...", flush=True)
+
+                if not API_DOMAIN or not API_HEADERS:
+                    print("⚠️ Нет API ключа, жду...", flush=True)
                     await asyncio.sleep(3)
 
-                # --- 1. УМНЫЙ ПАРСИНГ ID МАТЧЕЙ ---
-                # Берем только по 1 матчу из лиги, и ТОЛЬКО если у него есть счет (сыгран)
-                match_ids = await page.evaluate('''() => {
-                    let ids = [];
-                    let headers = document.querySelectorAll('.event__header');
-                    for (let header of headers) {
-                        let el = header.nextElementSibling;
-                        while(el && !el.classList.contains('event__header')) {
-                            if (el.classList.contains('event__match')) {
-                                let scoreHome = el.querySelector('.event__score--home');
-                                // Условие: матч должен иметь счет (не быть будущим)
-                                if (scoreHome && scoreHome.innerText.trim() !== '') {
-                                    let id = el.id.split('_').pop();
-                                    ids.push(id);
-                                    break; // Нашли 1 сыгранный матч - переходим к следующей лиге
-                                }
-                            }
-                            el = el.nextElementSibling;
-                        }
-                    }
-                    return ids;
-                }''')
-
-                print(f"✅ Найдено сыгранных лиг на странице: {len(match_ids)}. Сканирую...", flush=True)
-
-                # --- 2. ИЗВЛЕЧЕНИЕ ИМЕНИ ЛИГИ ИЗ HTML + ПРОВЕРКА СТАТИСТИКИ ---
-                for m_id in match_ids:
+                # --- 2. РЕНТГЕН БРОСКОВ ЧЕРЕЗ API ---
+                for league_name, m_id in match_dict.items():
                     try:
-                        # Получаем HTML-код страницы матча (быстрый GET запрос)
-                        html_url = f"https://www.flashscore.com/match/{m_id}/#/match-summary"
-                        html_resp = await context.request.get(html_url)
-                        html_text = await html_resp.text()
-
-                        # Ищем идеальное имя лиги в теге <title>
-                        # Пример: <title>Команда 1 - Команда 2 | Hockey, USA: NHL | Flashscore.com</title>
-                        title_match = re.search(r"Hockey,\s*([^|<]+)", html_text, re.IGNORECASE)
-                        if not title_match:
-                            continue
-                            
-                        league_name = title_match.group(1).strip()
-
-                        # Если мы уже проверили эту лигу в прошлые дни - пропускаем!
                         if league_name in BLACKLIST or league_name in WHITELIST:
                             continue
 
                         print(f"   🔍 🏆 {league_name}", flush=True)
 
-                        # Проверяем броски
                         stat_url = f"{API_DOMAIN}/2/x/feed/df_st_1_{m_id}"
                         stat_resp = await context.request.get(stat_url, headers=API_HEADERS)
                         stat_data = await stat_resp.text()
