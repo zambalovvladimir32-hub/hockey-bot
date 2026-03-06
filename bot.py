@@ -51,7 +51,7 @@ API_DOMAIN = None
 API_HEADERS = None
 
 async def main():
-    print("--- 🧠 БОТ-АРХИВАРИУС V4: ЧИСТЫЙ РЕНТГЕН API ---", flush=True)
+    print("--- 🧠 БОТ-АРХИВАРИУС V5: ИДЕАЛЬНЫЙ РЕНТГЕН ---", flush=True)
     global API_DOMAIN, API_HEADERS, BLACKLIST, WHITELIST
     
     async with async_playwright() as p:
@@ -90,7 +90,7 @@ async def main():
                     if captured_text: return
                     if "flashscore.ninja" in response.url and ("feed/f_4" in response.url or "feed/r_4" in response.url):
                         if day > 0 and "f_4_0" in response.url:
-                            return # Игнорим сегодняшний кэш для прошлых дней
+                            return 
                         try:
                             text = await response.text()
                             if "ZA÷" in text and "AA÷" in text:
@@ -100,7 +100,6 @@ async def main():
                 page.on("response", response_handler)
                 await page.goto(f"https://www.flashscore.com/hockey/?d=-{day}", timeout=40000)
                 
-                # Ждем перехвата базы
                 for _ in range(15):
                     if captured_text: break
                     await asyncio.sleep(1)
@@ -111,19 +110,19 @@ async def main():
                     print(f"❌ Не удалось поймать сырую базу для дня -{day}.", flush=True)
                     continue
 
-                # --- 1. ВЫТАКИВАЕМ ПО 1 МАТЧУ ИЗ КАЖДОЙ ЛИГИ ---
+                # --- 1. ВЫТАСКИВАЕМ ПО 1 МАТЧУ ИЗ КАЖДОЙ ЛИГИ (БЕЗ ФИЛЬТРОВ) ---
                 match_ids_to_check = []
-                za_blocks = captured_text.split("ZA÷")
+                blocks = captured_text.split("~")
+                need_match = False
                 
-                for block in za_blocks[1:]:
-                    matches = block.split("~AA÷")
-                    for m_block in matches[1:]:
-                        # Ищем только завершенные матчи (статусы 3, 8, 9)
-                        if "¬AC÷3¬" in m_block or "¬AC÷8¬" in m_block or "¬AC÷9¬" in m_block:
-                            m_id = m_block.split("¬")[0]
-                            if len(m_id) == 8:
-                                match_ids_to_check.append(m_id)
-                                break # Нашли один матч для турнира — идем к следующему турниру!
+                for block in blocks:
+                    if block.startswith("ZA÷"):
+                        need_match = True  # Увидели новую лигу, включаем "пылесос"
+                    elif block.startswith("AA÷") and need_match:
+                        m_id = block.split("¬")[0].replace("AA÷", "")
+                        if len(m_id) == 8:
+                            match_ids_to_check.append(m_id)
+                            need_match = False # Матч найден, выключаем до следующей лиги
 
                 print(f"✅ Найдено турниров в базе: {len(match_ids_to_check)}. Сканирую имена...", flush=True)
 
@@ -145,13 +144,11 @@ async def main():
                             
                         league_name = league_match.group(1).strip()
 
-                        # Если мы уже знаем эту лигу — моментально пропускаем!
                         if league_name in BLACKLIST or league_name in WHITELIST:
                             continue
 
                         print(f"   🔍 🏆 {league_name}", flush=True)
 
-                        # Проверяем статистику бросков (ST)
                         stat_url = f"{API_DOMAIN}/2/x/feed/df_st_1_{m_id}"
                         stat_resp = await context.request.get(stat_url, headers=API_HEADERS)
                         stat_data = await stat_resp.text()
@@ -181,13 +178,12 @@ async def main():
                             save_list(BLACKLIST_FILE, BLACKLIST)
                             
                     except Exception as e:
-                        print(f"      ⚠️ Ошибка проверки API матча {m_id}: {e}", flush=True)
+                        pass
                         
-                    await asyncio.sleep(0.3) # Анти-бан пауза
+                    await asyncio.sleep(0.3) 
 
             except Exception as e:
                 print(f"🚨 ОШИБКА НА ДНЕ {day}: {e}", flush=True)
-                traceback.print_exc()
 
         print(f"\n🏁 ПУТЕШЕСТВИЕ ВО ВРЕМЕНИ ЗАВЕРШЕНО!")
         print(f"📊 Итоговые знания: {len(WHITELIST)} хороших лиг, {len(BLACKLIST)} мусорных.")
