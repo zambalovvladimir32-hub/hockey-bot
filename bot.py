@@ -13,7 +13,6 @@ API_DOMAIN = None
 API_HEADERS = None
 FEED_URL = None
 
-# --- ФАЙЛЫ СПИСКОВ ЛИГ ---
 BLACKLIST_FILE = "blacklist.json"
 
 def load_list(filename):
@@ -36,7 +35,7 @@ async def send_tg(text):
         except: pass
 
 async def main():
-    print("--- ☢️ БОТ V110: ULTIMATE SNIPER (СТРОГО 1-Й ПЕРИОД) ---", flush=True)
+    print("--- ☢️ БОТ V111: ULTIMATE SNIPER (ИСПРАВЛЕННЫЙ ЛАЙВ) ---", flush=True)
     global API_DOMAIN, API_HEADERS, FEED_URL, BLACKLIST
     
     async with async_playwright() as p:
@@ -47,21 +46,25 @@ async def main():
         async def handle_request(request):
             global API_DOMAIN, API_HEADERS, FEED_URL
             if "flashscore.ninja" in request.url and "x-fsign" in request.headers:
-                if "feed/f_4" in request.url and not FEED_URL:
+                # Ищем СТРОГО лайв-фид (содержит f_4_1)
+                if "feed/f_4_1" in request.url and not FEED_URL:
                     FEED_URL = request.url
                     match = re.search(r"(https://[a-zA-Z0-9.-]+\.flashscore\.ninja)", request.url)
                     if match: API_DOMAIN = match.group(1)
                     
+                    # Добавлены заголовки против кэширования
                     API_HEADERS = {
                         "x-fsign": request.headers["x-fsign"],
                         "X-Requested-With": "XMLHttpRequest",
-                        "Referer": "https://www.flashscore.com/"
+                        "Referer": "https://www.flashscore.com/",
+                        "Cache-Control": "no-cache",
+                        "Pragma": "no-cache"
                     }
-                    print(f"   🎯 Пойман URL базы: {FEED_URL.split('/')[-1]}", flush=True)
+                    print(f"   🎯 Пойман URL ЛАЙВ-базы: {FEED_URL.split('/')[-1]}", flush=True)
 
         page.on("request", handle_request)
 
-        print("📡 Захожу на сайт, выслеживаю API...", flush=True)
+        print("📡 Захожу на вкладку LIVE...", flush=True)
         await page.goto("https://www.flashscore.com/hockey/?s=2", timeout=40000)
         
         for _ in range(15):
@@ -69,7 +72,7 @@ async def main():
             await asyncio.sleep(1)
 
         if not FEED_URL:
-            print("❌ Не удалось поймать фид. Перезапуск...")
+            print("❌ Не удалось поймать ЛАЙВ фид. Возможно, сейчас вообще нет матчей в лайве. Перезапуск...")
             await browser.close()
             return
 
@@ -101,7 +104,8 @@ async def main():
                         
                     if block.startswith("AA÷"):
                         ac_match = re.search(r"¬AC÷(\d+)¬", block)
-                        if ac_match and int(ac_match.group(1)) in [2, 36, 37, 38, 39, 40]:
+                        # ПРАВИЛЬНЫЕ хоккейные статусы: 12 (P1), 13 (P2), 14 (P3), 15 (OT), 16 (Pen), 36-38 (Перерывы)
+                        if ac_match and int(ac_match.group(1)) in [12, 13, 14, 15, 16, 36, 37, 38]:
                             live_count += 1
                             
                         # ЖЕСТКИЙ ФИЛЬТР: Только перерыв после 1-го периода
@@ -123,7 +127,6 @@ async def main():
                         sc_h = int(sc_h_match.group(1)) if sc_h_match else 0
                         sc_a = int(sc_a_match.group(1)) if sc_a_match else 0
 
-                        # Тотал голов больше 1 — пропускаем
                         if (sc_h + sc_a) > 1: continue
 
                         print(f"   🎯 ПЕРЕРЫВ P1: {home} - {away} | 🏆 {current_league}", flush=True)
@@ -139,20 +142,16 @@ async def main():
                             TRACKED_MATCHES.add(m_id)
                             continue
 
-                        # === ИЗОЛЯЦИЯ 1-ГО ПЕРИОДА ===
                         p1_data = None
                         if "~SE÷" in stat_data:
                             for tab in stat_data.split("~SE÷"):
-                                # Ищем вкладку, название которой начинается с 1st Period или 1-й период
                                 if re.search(r"^(1st Period|1-й период|1\. Period|Period 1)", tab, re.IGNORECASE):
                                     p1_data = tab
                                     break
                         
-                        # Если вкладки вдруг нет (или формат поменялся), на всякий случай берем всё
                         if not p1_data:
                             p1_data = stat_data
 
-                        # Ищем данные ТОЛЬКО в блоке 1-го периода
                         sh = re.search(r"SG÷(?:Shots on Goal|Броски в створ)¬SH÷(\d+)¬SI÷(\d+)", p1_data, re.IGNORECASE)
                         wh = re.search(r"SG÷(?:Penalties|Удаления)¬SH÷(\d+)¬SI÷(\d+)", p1_data, re.IGNORECASE)
                         pim = re.search(r"SG÷(?:PIM|Штрафное время)¬SH÷(\d+)¬SI÷(\d+)", p1_data, re.IGNORECASE)
