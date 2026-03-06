@@ -9,11 +9,6 @@ from playwright.async_api import async_playwright
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("CHANNEL_ID")
 
-API_DOMAIN = None
-API_HEADERS = None
-FEED_URL = None
-TARGET_FEED = ""
-
 BLACKLIST_FILE = "blacklist.json"
 WHITELIST_FILE = "whitelist.json"
 
@@ -49,63 +44,67 @@ async def send_tg_chunked(text):
         await asyncio.sleep(1)
 
 async def main():
-    print("--- 🧠 БОТ-АРХИВАРИУС: МАШИНА ВРЕМЕНИ (ИСПРАВЛЕННАЯ БАЗА) ---", flush=True)
-    global API_DOMAIN, API_HEADERS, FEED_URL, TARGET_FEED, BLACKLIST, WHITELIST
+    print("--- 🧠 БОТ-АРХИВАРИУС: БРОНЕБОЙНЫЙ РАДАР (7 ДНЕЙ) ---", flush=True)
+    global BLACKLIST, WHITELIST
     
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True, args=['--no-sandbox', '--disable-dev-shm-usage', '--disable-blink-features=AutomationControlled'])
         context = await browser.new_context(user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
         page = await context.new_page()
 
-        async def handle_request(request):
-            global API_DOMAIN, API_HEADERS, FEED_URL, TARGET_FEED
-            if "flashscore.ninja" in request.url and "x-fsign" in request.headers:
-                # Ловим строго полный фид нужного дня (например, f_4_-1)
-                if TARGET_FEED in request.url and "df_st" not in request.url and not FEED_URL:
-                    FEED_URL = request.url
-                    match = re.search(r"(https://[a-zA-Z0-9.-]+\.flashscore\.ninja)", request.url)
-                    if match: API_DOMAIN = match.group(1)
-                    
-                    API_HEADERS = {
-                        "x-fsign": request.headers["x-fsign"],
-                        "X-Requested-With": "XMLHttpRequest",
-                        "Referer": "https://www.flashscore.com/",
-                        "Cache-Control": "no-cache",
-                        "Pragma": "no-cache"
-                    }
-
-        page.on("request", handle_request)
-
         for day in range(8):
-            FEED_URL = None
-            
-            # Формируем правильную маску: для 0 это f_4_0, для 1 это f_4_-1 и т.д.
-            day_offset = f"-{day}" if day > 0 else "0"
-            TARGET_FEED = f"feed/f_4_{day_offset}"
+            # Контейнер для захваченных данных этого дня
+            captured = {"text": None, "domain": None, "headers": None}
+
+            # Хитрый перехватчик: ловим ОТВЕТЫ, проверяем их начинку
+            async def response_handler(response):
+                if captured["text"]: return # Если уже поймали нужный файл - игнорим остальные
+                
+                if "flashscore.ninja" in response.url and ("feed/f_4" in response.url or "feed/r_4" in response.url):
+                    try:
+                        text = await response.text()
+                        # Ищем файл, в котором точно есть и Лиги (ZA) и Матчи (AA)
+                        if "ZA÷" in text and "AA÷" in text:
+                            captured["text"] = text
+                            req = response.request
+                            match = re.search(r"(https://[a-zA-Z0-9.-]+\.flashscore\.ninja)", req.url)
+                            if match: captured["domain"] = match.group(1)
+                            
+                            captured["headers"] = {
+                                "x-fsign": req.headers.get("x-fsign", ""),
+                                "X-Requested-With": "XMLHttpRequest",
+                                "Referer": "https://www.flashscore.com/"
+                            }
+                            print(f"   🎯 Пойман правильный файл: {response.url.split('/')[-1]}", flush=True)
+                    except:
+                        pass
+
+            # Вешаем слушателя
+            page.on("response", response_handler)
             
             day_label = "СЕГОДНЯ" if day == 0 else f"{day} ДНЕЙ НАЗАД"
             print(f"\n⏳ ПРЫЖОК ВО ВРЕМЕНИ: {day_label} (d=-{day})", flush=True)
             
             await page.goto(f"https://www.flashscore.com/hockey/?d=-{day}", timeout=40000)
             
+            # Ждем, пока перехватчик поймает нужный кусок
             for _ in range(15):
-                if FEED_URL: break
+                if captured["text"]: break
                 await asyncio.sleep(1)
 
-            if not FEED_URL:
-                print(f"❌ Не удалось поймать фид для дня -{day} ({TARGET_FEED}). Пропускаю...", flush=True)
+            # Снимаем слушателя, чтобы не мешал следующему дню
+            page.remove_listener("response", response_handler)
+
+            if not captured["text"]:
+                print(f"❌ Не удалось поймать полноценную базу для дня -{day}. Идем дальше...", flush=True)
                 continue
 
-            print(f"✅ База поймана: {FEED_URL.split('/')[-1]}. Начинаю сканирование...", flush=True)
-
-            response = await context.request.get(FEED_URL, headers=API_HEADERS)
-            text = await response.text()
+            print(f"✅ База загружена! Начинаю сканирование...", flush=True)
             
-            blocks = text.split("~")
+            blocks = captured["text"].split("~")
             current_league = "Unknown League"
             
             for block in blocks:
-                # В полных базах названия лиг всегда есть!
                 if block.startswith("ZA÷"):
                     league_match = re.search(r"ZA÷([^¬]+)", block)
                     if league_match:
@@ -121,9 +120,9 @@ async def main():
                     m_id = block.split("¬")[0].replace("AA÷", "")
                     print(f"   🔍 Изучаю новую лигу: 🏆 {current_league}", flush=True)
 
-                    stat_url = f"{API_DOMAIN}/2/x/feed/df_st_1_{m_id}"
+                    stat_url = f"{captured['domain']}/2/x/feed/df_st_1_{m_id}"
                     try:
-                        stat_response = await context.request.get(stat_url, headers=API_HEADERS)
+                        stat_response = await context.request.get(stat_url, headers=captured["headers"])
                         stat_data = await stat_response.text()
 
                         if not stat_data or "SG÷" not in stat_data:
