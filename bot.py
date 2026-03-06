@@ -35,7 +35,7 @@ async def send_tg(text):
         except: pass
 
 async def main():
-    print("--- ☢️ БОТ V111: ULTIMATE SNIPER (ИСПРАВЛЕННЫЙ ЛАЙВ) ---", flush=True)
+    print("--- ☢️ БОТ V112: ULTIMATE SNIPER (ИДЕАЛЬНЫЙ БАЛАНС) ---", flush=True)
     global API_DOMAIN, API_HEADERS, FEED_URL, BLACKLIST
     
     async with async_playwright() as p:
@@ -46,13 +46,12 @@ async def main():
         async def handle_request(request):
             global API_DOMAIN, API_HEADERS, FEED_URL
             if "flashscore.ninja" in request.url and "x-fsign" in request.headers:
-                # Ищем СТРОГО лайв-фид (содержит f_4_1)
-                if "feed/f_4_1" in request.url and not FEED_URL:
+                # ВОЗВРАЩАЕМ МЯГКИЙ ПЕРЕХВАТ f_4
+                if "feed/f_4" in request.url and not FEED_URL:
                     FEED_URL = request.url
                     match = re.search(r"(https://[a-zA-Z0-9.-]+\.flashscore\.ninja)", request.url)
                     if match: API_DOMAIN = match.group(1)
                     
-                    # Добавлены заголовки против кэширования
                     API_HEADERS = {
                         "x-fsign": request.headers["x-fsign"],
                         "X-Requested-With": "XMLHttpRequest",
@@ -60,11 +59,11 @@ async def main():
                         "Cache-Control": "no-cache",
                         "Pragma": "no-cache"
                     }
-                    print(f"   🎯 Пойман URL ЛАЙВ-базы: {FEED_URL.split('/')[-1]}", flush=True)
+                    print(f"   🎯 Пойман URL базы: {FEED_URL.split('/')[-1]}", flush=True)
 
         page.on("request", handle_request)
 
-        print("📡 Захожу на вкладку LIVE...", flush=True)
+        print("📡 Захожу на сайт...", flush=True)
         await page.goto("https://www.flashscore.com/hockey/?s=2", timeout=40000)
         
         for _ in range(15):
@@ -72,7 +71,7 @@ async def main():
             await asyncio.sleep(1)
 
         if not FEED_URL:
-            print("❌ Не удалось поймать ЛАЙВ фид. Возможно, сейчас вообще нет матчей в лайве. Перезапуск...")
+            print("❌ Не удалось поймать фид. Перезапуск...")
             await browser.close()
             return
 
@@ -108,7 +107,7 @@ async def main():
                         if ac_match and int(ac_match.group(1)) in [12, 13, 14, 15, 16, 36, 37, 38]:
                             live_count += 1
                             
-                        # ЖЕСТКИЙ ФИЛЬТР: Только перерыв после 1-го периода
+                        # ЖЕСТКИЙ ФИЛЬТР: Только перерыв после 1-го периода (статус 36)
                         if "¬AC÷36¬" not in block: continue 
                         
                         m_id = block.split("¬")[0].replace("AA÷", "")
