@@ -29,7 +29,7 @@ def save_list(filename, data):
 BLACKLIST = load_list(BLACKLIST_FILE)
 WHITELIST = load_list(WHITELIST_FILE)
 
-# 🛠 АМНИСТИЯ: Убираем топовые лиги из ЧС, если они попали туда из-за бага с будущими матчами
+# 🛠 АМНИСТИЯ (на всякий случай оставляем)
 amnestied = False
 for false_negative in ["USA: NHL", "USA: AHL", "SWEDEN: SHL", "CANADA: OHL", "CANADA: QMJHL", "CANADA: WHL"]:
     if false_negative in BLACKLIST:
@@ -60,7 +60,7 @@ API_DOMAIN = None
 API_HEADERS = None
 
 async def main():
-    print("--- 🧠 БОТ-АРХИВАРИУС V8: ИДЕАЛЬНЫЙ API-ПАРСЕР ---", flush=True)
+    print("--- 🧠 БОТ-АРХИВАРИУС V9: ЭМУЛЯТОР ЧЕЛОВЕКА ---", flush=True)
     global API_DOMAIN, API_HEADERS, BLACKLIST, WHITELIST
     
     async with async_playwright() as p:
@@ -99,21 +99,34 @@ async def main():
                     if captured_text: return
                     
                     if "flashscore.ninja" in response.url and "df_st" not in response.url:
-                        # Игнорируем сегодняшний кэш для прошлых дней
-                        if day > 0 and "f_4_0" in response.url:
-                            return 
                         try:
                             text = await response.text()
+                            # Гарантия того, что это база лиг и матчей
                             if "ZA÷" in text and "AA÷" in text:
                                 captured_text = text
                         except: pass
 
+                # Вешаем перехватчик ДО действия
                 page.on("response", response_handler)
                 
-                # Убиваем SPA-кэш страницы
-                await page.goto("about:blank")
-                await page.goto(f"https://www.flashscore.com/hockey/?d=-{day}", timeout=40000)
-                
+                if day == 0:
+                    # Заходим на сайт в первый раз
+                    await page.goto("https://www.flashscore.com/hockey/", timeout=60000)
+                    
+                    # Закрываем баннер с куки, если он есть, чтобы не мешал кликам
+                    try:
+                        await page.click('#onetrust-accept-btn-handler', timeout=3000)
+                        await asyncio.sleep(1)
+                    except: pass
+                else:
+                    # Для прошлых дней просто жмем стрелку "Вчера" в календаре!
+                    try:
+                        await page.evaluate("window.scrollTo(0, 0)") # Поднимаемся наверх
+                        await page.click('.calendar__direction--yesterday', timeout=5000)
+                    except Exception as e:
+                        print(f"❌ Не удалось нажать кнопку календаря: {e}", flush=True)
+
+                # Ждем перехвата базы
                 for _ in range(15):
                     if captured_text: break
                     await asyncio.sleep(1)
@@ -121,10 +134,10 @@ async def main():
                 page.remove_listener("response", response_handler)
 
                 if not captured_text:
-                    print(f"❌ Не удалось поймать сырую базу для дня -{day}.", flush=True)
+                    print(f"❌ База не поймана. Идем дальше...", flush=True)
                     continue
 
-                # --- 1. ПАРСИНГ ЛИГ НАПРЯМУЮ ИЗ ТЕКСТА БАЗЫ (ЖЕСТКО ЗАВЕРШЕННЫЕ) ---
+                # --- ПАРСИНГ ЛИГ ИЗ ТЕКСТА ---
                 match_dict = {} 
                 blocks = captured_text.split("ZA÷")
                 
@@ -134,13 +147,12 @@ async def main():
                     m_id = None
                     
                     for m in matches:
-                        # ЖЕСТКАЯ ПРОВЕРКА: Только статусы 3, 8, 9, 10, 11 (сыгранные)
+                        # Только сыгранные матчи (статусы 3, 8, 9, 10, 11)
                         if any(f"¬AC÷{s}¬" in m for s in [3, 8, 9, 10, 11]):
                             m_id = m.split("¬")[0]
                             if len(m_id) == 8:
                                 break
                     
-                    # НИКАКИХ КОСТЫЛЕЙ! Если завершенных матчей нет - мы игнорируем эту лигу на сегодня.
                     if m_id and len(m_id) == 8:
                         match_dict[league_name] = m_id
 
@@ -150,7 +162,7 @@ async def main():
                     print("⚠️ Нет API ключа, жду...", flush=True)
                     await asyncio.sleep(3)
 
-                # --- 2. РЕНТГЕН БРОСКОВ ЧЕРЕЗ API ---
+                # --- РЕНТГЕН БРОСКОВ ЧЕРЕЗ API ---
                 for league_name, m_id in match_dict.items():
                     try:
                         if league_name in BLACKLIST or league_name in WHITELIST:
