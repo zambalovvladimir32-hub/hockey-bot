@@ -65,7 +65,7 @@ API_DOMAIN = None
 API_HEADERS = None
 
 async def main():
-    print("--- 🛡 БОЕВОЙ СНАЙПЕР V12: ДОМ-ПОТРОШИТЕЛЬ ---", flush=True)
+    print("--- 🛡 БОЕВОЙ СНАЙПЕР V13: АБСОЛЮТНОЕ ОРУЖИЕ ---", flush=True)
     print(f"✅ Элитных лиг на радаре: {len(WHITELIST)}")
     
     global API_DOMAIN, API_HEADERS
@@ -80,7 +80,7 @@ async def main():
 
         async def token_handler(request):
             global API_DOMAIN, API_HEADERS
-            if not API_HEADERS and "flashscore.ninja" in request.url and "x-fsign" in request.headers:
+            if "flashscore.ninja" in request.url and "x-fsign" in request.headers:
                 match = re.search(r"(https://[a-zA-Z0-9.-]+\.flashscore\.ninja)", request.url)
                 if match: 
                     API_DOMAIN = match.group(1)
@@ -90,74 +90,87 @@ async def main():
                         "Referer": "https://www.flashscore.com/",
                         "Cache-Control": "no-cache"
                     }
-                    print("   🔑 Токен-доступ получен. Начинаю охоту!", flush=True)
 
         page.on("request", token_handler)
-        await page.goto("https://www.flashscore.com/hockey/", timeout=60000)
         
         cycle = 1
         while True:
             try:
-                print(f"\n🔄 [Скан {cycle}] Проверяю LIVE матчи...", flush=True)
+                print(f"\n🔄 [Скан {cycle}] Обновляю страницу и собираю свежие данные...", flush=True)
+                
+                # 1. ПОЛНАЯ ПЕРЕЗАГРУЗКА: Гарантирует актуальный DOM и свежий токен
+                await page.goto("https://www.flashscore.com/hockey/", wait_until="domcontentloaded", timeout=60000)
+                await asyncio.sleep(2)
                 
                 if not API_HEADERS:
-                    await asyncio.sleep(5)
+                    print("   ⚠️ Жду API токен...")
+                    await asyncio.sleep(3)
                     continue
 
-                # --- 1. АВТО-СКРОЛЛЕР (Заставляем сайт загрузить все лиги) ---
+                # 2. ПОДГОТОВКА СТРАНИЦЫ (Скрипт-Бульдозер)
                 await page.evaluate('''async () => {
-                    let lastScrollTop = 0;
+                    // Кликаем на вкладку LIVE, чтобы убрать лишние матчи
+                    let tabs = document.querySelectorAll('.filters__tab');
+                    for (let tab of tabs) {
+                        if (tab.textContent.includes('LIVE')) {
+                            tab.click();
+                            break;
+                        }
+                    }
+                    await new Promise(r => setTimeout(r, 1000));
+                    
+                    // Скроллим в самый низ, чтобы выгрузились все лиги
+                    let lastScrollTop = -1;
                     while (true) {
                         window.scrollBy(0, 1500);
-                        await new Promise(resolve => setTimeout(resolve, 200));
+                        await new Promise(r => setTimeout(r, 200));
                         if (document.documentElement.scrollTop === lastScrollTop) break;
                         lastScrollTop = document.documentElement.scrollTop;
                     }
-                    window.scrollTo(0, 0); // Возвращаемся наверх
                 }''')
-                await asyncio.sleep(1)
-
-                # --- 2. ЖЕСТКОЕ ИЗВЛЕЧЕНИЕ ТЕКСТА (textContent) ---
+                
+                # 3. ЖЕСТКОЕ ИЗВЛЕЧЕНИЕ (Парсинг по ID и тегам)
                 live_matches = await page.evaluate('''() => {
                     let matches = [];
                     let currentLeague = "Unknown";
                     
-                    // Берем ВСЕ заголовки и матчи подряд
-                    let elements = document.querySelectorAll('.event__header, .event__match');
+                    // Берем заголовки и ВСЕ матчи по их префиксу ID (g_4_)
+                    let elements = document.querySelectorAll('.event__header, [id^="g_4_"]');
                     
                     for (let el of elements) {
                         if (el.classList.contains('event__header')) {
-                            // ИСПОЛЬЗУЕМ textContent - он достает текст даже из скрытых элементов в headless режиме!
-                            let countryNode = el.querySelector('.event__title--type');
-                            let leagueNode = el.querySelector('.event__title--name');
+                            // ХИМИЧЕСКАЯ ОЧИСТКА: Удаляем SVG и бьем по HTML-тегам
+                            let rawHtml = el.innerHTML.replace(/<svg\\b[^>]*>.*?<\\/svg>/gi, '').replace(/<img\\b[^>]*>/gi, '');
+                            let textParts = rawHtml.split(/<[^>]+>/).map(s => s.trim()).filter(s => s.length > 0);
                             
-                            let country = countryNode ? countryNode.textContent.trim() : "";
-                            let league = leagueNode ? leagueNode.textContent.trim() : "";
-                            
-                            if (country && league) {
-                                currentLeague = country + ": " + league;
+                            if (textParts.length >= 2) {
+                                currentLeague = textParts[0] + ": " + textParts[1];
+                            } else if (textParts.length === 1) {
+                                currentLeague = textParts[0];
                             }
                         } 
-                        else if (el.classList.contains('event__match--live')) {
-                            let stageNode = el.querySelector('.event__stage--block');
-                            let stageText = stageNode ? stageNode.textContent.toLowerCase() : "";
+                        else if (el.id && el.id.startsWith('g_4_')) {
+                            let stageText = el.textContent.toLowerCase();
                             
-                            // Фильтр: 1-й период или перерыв
                             if (stageText.includes('1st') || stageText.includes('1-й') || stageText.includes('перерыв') || stageText.includes('break') || stageText.includes('period 1')) {
                                 let matchId = el.id.split('_').pop();
                                 
-                                // textContent.replace - очищает от мусора
-                                let home = el.querySelector('.event__participant--home')?.textContent.trim() || "Team 1";
-                                let away = el.querySelector('.event__participant--away')?.textContent.trim() || "Team 2";
+                                let homeNode = el.querySelector('.event__participant--home');
+                                let awayNode = el.querySelector('.event__participant--away');
+                                let home = homeNode ? homeNode.textContent.trim() : "Team 1";
+                                let away = awayNode ? awayNode.textContent.trim() : "Team 2";
                                 
-                                // Ищем первую попавшуюся цифру в счете, чтобы избежать проблем с буллитами "(1) 3"
-                                let scoreHomeMatch = (el.querySelector('.event__score--home')?.textContent || "").match(/\\d+/);
-                                let scoreAwayMatch = (el.querySelector('.event__score--away')?.textContent || "").match(/\\d+/);
+                                let scoreHomeNode = el.querySelector('.event__score--home');
+                                let scoreAwayNode = el.querySelector('.event__score--away');
                                 
-                                let scoreHome = scoreHomeMatch ? scoreHomeMatch[0] : "0";
-                                let scoreAway = scoreAwayMatch ? scoreAwayMatch[0] : "0";
+                                let hMatch = (scoreHomeNode ? scoreHomeNode.textContent : "").match(/\\d+/);
+                                let aMatch = (scoreAwayNode ? scoreAwayNode.textContent : "").match(/\\d+/);
                                 
-                                let time = stageText.replace(/\\n/g, ' ').trim();
+                                let scoreHome = hMatch ? hMatch[0] : "0";
+                                let scoreAway = aMatch ? aMatch[0] : "0";
+                                
+                                let stageNode = el.querySelector('.event__stage--block');
+                                let time = stageNode ? stageNode.textContent.trim() : "1st";
                                 
                                 matches.push({
                                     id: matchId, 
@@ -176,7 +189,7 @@ async def main():
 
                 valid_matches = []
                 
-                # --- 3. УМНАЯ СВЕРКА ЛИГ ---
+                # 4. УМНАЯ СВЕРКА
                 for m in live_matches:
                     print(f"   [РАДАР] {m['home']} - {m['away']} | 🏆 {m['league']}")
                     
@@ -190,13 +203,15 @@ async def main():
                 
                 print(f"👀 Итог сканирования: Найдено в 1-м периоде {len(live_matches)} | Подходят под Белый Список: {len(valid_matches)}")
 
-                # --- 4. РЕНТГЕН СТАТИСТИКИ (АВТОРСКАЯ СТРАТЕГИЯ) ---
+                # 5. РЕНТГЕН СТАТИСТИКИ (Авторская Стратегия)
                 for match in valid_matches:
                     m_id = match['id']
                     if m_id in notified_matches:
                         continue
 
-                    if 'перерыв' not in match['time'] and 'break' not in match['time']:
+                    # Проверка перерыва
+                    time_lower = match['time'].lower()
+                    if 'перерыв' not in time_lower and 'break' not in time_lower:
                         continue 
 
                     goals_home = int(match['scoreHome'])
@@ -252,7 +267,7 @@ async def main():
                             notified_matches.add(m_id)
 
                     except Exception as e:
-                        print(f"      ⚠️ Ошибка API: {e}", flush=True)
+                        pass
 
                     await asyncio.sleep(0.5)
 
