@@ -6,13 +6,20 @@ import urllib.request
 import traceback
 from playwright.async_api import async_playwright
 
-# --- КОНФИГ ---
+# ==========================================
+# ⚙️ ПАНЕЛЬ УПРАВЛЕНИЯ ТВОЕЙ СТРАТЕГИЕЙ ⚙️
+# ==========================================
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("CHANNEL_ID")
-WHITELIST_FILE = "whitelist.json"
+WHITELIST_FILE = "whitelist.json" # Файл для твоих личных лиг
 
-# 🏆 ЗОЛОТАЯ ДВАДЦАТКА
-HARDCODED_WHITELIST = {
+# 🚨 ТВОИ ТРИГГЕРЫ 🚨
+STRATEGY_MAX_GOALS = 1    # Максимум голов (в сумме)
+STRATEGY_MIN_SHOTS = 13   # Минимум бросков (хотя бы у одной команды)
+STRATEGY_MIN_PIM = 4      # Минимум штрафных минут (в сумме за 1 период)
+
+# 🏆 БАЗОВЫЙ БЕЛЫЙ СПИСОК (Можешь добавлять сюда или в whitelist.json)
+HARDCODED_WHITELIST = [
     "AUSTRIA: ICE Hockey League",
     "AUSTRIA: ICE Hockey League - Play Offs",
     "CZECH REPUBLIC: Extraliga",
@@ -33,21 +40,26 @@ HARDCODED_WHITELIST = {
     "USA: AHL",
     "USA: NHL",
     "USA: SPHL"
-}
+]
 
 notified_matches = set()
 
+# --- ЗАГРУЗКА ВСЕХ ТВОИХ ЛИГ ---
 def load_whitelist():
     leagues = set(HARDCODED_WHITELIST)
     if os.path.exists(WHITELIST_FILE):
         try:
             with open(WHITELIST_FILE, "r", encoding="utf-8") as f:
-                leagues.update(json.load(f))
-        except: pass
+                user_leagues = json.load(f)
+                leagues.update(user_leagues)
+                print(f"📁 Подгружено {len(user_leagues)} лиг из файла whitelist.json")
+        except Exception as e: 
+            print(f"⚠️ Ошибка чтения whitelist.json: {e}")
     return leagues
 
 WHITELIST = load_whitelist()
 
+# --- ОТПРАВКА В ТЕЛЕГРАМ ---
 def send_tg_sync(text):
     if not TOKEN or not CHAT_ID: return
     try:
@@ -65,8 +77,9 @@ API_DOMAIN = None
 API_HEADERS = None
 
 async def main():
-    print("--- 🎯 БОЕВОЙ СНАЙПЕР: СТРУКТУРНЫЙ ЗАХВАТ ---", flush=True)
-    print(f"✅ Элитных лиг в базе: {len(WHITELIST)}")
+    print("--- 🎯 БОЕВОЙ СНАЙПЕР: СТРАТЕГИЯ АКТИВИРОВАНА ---", flush=True)
+    print(f"✅ Всего лиг на радаре: {len(WHITELIST)}")
+    print(f"⚙️ Настройки: Голы <= {STRATEGY_MAX_GOALS} | Броски >= {STRATEGY_MIN_SHOTS} | Штрафы >= {STRATEGY_MIN_PIM}м")
     
     global API_DOMAIN, API_HEADERS
     
@@ -90,7 +103,7 @@ async def main():
                         "Referer": "https://www.flashscore.com/",
                         "Cache-Control": "no-cache"
                     }
-                    print("   🔑 API-Токен получен! Начинаю работу.", flush=True)
+                    print("   🔑 API-Токен захвачен. Погнали!", flush=True)
 
         page.on("request", token_handler)
         await page.goto("https://www.flashscore.com/hockey/", timeout=60000)
@@ -98,13 +111,12 @@ async def main():
         cycle = 1
         while True:
             try:
-                print(f"\n🔄 [Скан {cycle}] Жду перерывы в LIVE матчах...", flush=True)
+                print(f"\n🔄 [Скан {cycle}] Жду ПЕРЕРЫВЫ в LIVE матчах...", flush=True)
                 
                 if not API_HEADERS:
                     await asyncio.sleep(5)
                     continue
 
-                # Кликаем на LIVE и прогружаем страницу вниз, чтобы появились все матчи
                 await page.evaluate('''async () => {
                     let liveTab = Array.from(document.querySelectorAll('.filters__tab')).find(el => el.textContent.includes('LIVE'));
                     if (liveTab) liveTab.click();
@@ -113,36 +125,31 @@ async def main():
                     await new Promise(r => setTimeout(r, 500));
                 }''')
 
-                # СТРОГИЙ СБОР: СТРУКТУРНЫЙ ПАРСИНГ БЕЗ CSS КЛАССОВ
+                # СБОР МАТЧЕЙ (ТОЛЬКО НА ПЕРЕРЫВЕ) И СТРУКТУРНЫЙ ПАРСИНГ ЛИГ
                 live_matches = await page.evaluate('''() => {
                     let matches = [];
-                    // Ищем абсолютно все матчи по их префиксу ID (независимо от классов)
                     let elements = document.querySelectorAll('[id^="g_4_"]');
                     
                     for (let el of elements) {
                         let stageNode = el.querySelector('[class*="stage--block"]');
                         let stageText = stageNode ? stageNode.textContent.toLowerCase() : "";
                         
-                        // 🚨 СТРОГОЕ УСЛОВИЕ: ТОЛЬКО ПЕРЕРЫВ (исключаем 2й и 3й) 🚨
+                        // ИЩЕМ ТОЛЬКО ПЕРЕРЫВ ПОСЛЕ 1-ГО ПЕРИОДА
                         if (stageText.includes('перерыв') || stageText.includes('break')) {
                             if (!stageText.includes('2nd') && !stageText.includes('2-й') && !stageText.includes('3rd') && !stageText.includes('3-й')) {
                                 
-                                // 🧠 ВЫЧИСЛЯЕМ ЛИГУ ЧЕРЕЗ СТРУКТУРУ DOM (Идем вверх по списку)
                                 let currentLeague = "Unknown";
                                 let prev = el.previousElementSibling;
                                 
-                                // Пропускаем все соседние матчи, пока не упремся в заголовок
                                 while (prev && prev.id && prev.id.startsWith('g_4_')) {
                                     prev = prev.previousElementSibling;
                                 }
                                 
                                 if (prev) {
-                                    // Пробуем взять атрибут title (там часто лежит "Страна: Лига")
                                     let titleAttr = prev.getAttribute('title');
                                     if (titleAttr && titleAttr.includes(':')) {
                                         currentLeague = titleAttr;
                                     } else {
-                                        // Если title нет, химически вычищаем текст из HTML
                                         let raw = prev.innerHTML.replace(/<svg[^>]*>.*?<\\/svg>/gi, '').replace(/<[^>]+>/g, '|');
                                         let parts = raw.split('|').map(s => s.trim()).filter(s => s.length > 1);
                                         if (parts.length >= 2) {
@@ -156,23 +163,18 @@ async def main():
                                 }
 
                                 let matchId = el.id.split('_').pop();
-                                
                                 let home = el.querySelector('[class*="participant--home"]')?.textContent.trim() || "Team 1";
                                 let away = el.querySelector('[class*="participant--away"]')?.textContent.trim() || "Team 2";
-                                
                                 let hMatch = (el.querySelector('[class*="score--home"]')?.textContent || "").match(/\\d+/);
                                 let aMatch = (el.querySelector('[class*="score--away"]')?.textContent || "").match(/\\d+/);
-                                
-                                let scoreHome = hMatch ? hMatch[0] : "0";
-                                let scoreAway = aMatch ? aMatch[0] : "0";
                                 
                                 matches.push({
                                     id: matchId, 
                                     league: currentLeague,
                                     home: home,
                                     away: away,
-                                    scoreHome: scoreHome,
-                                    scoreAway: scoreAway,
+                                    scoreHome: hMatch ? hMatch[0] : "0",
+                                    scoreAway: aMatch ? aMatch[0] : "0",
                                     time: stageText.replace(/\\n/g, ' ').trim()
                                 });
                             }
@@ -183,38 +185,43 @@ async def main():
 
                 valid_matches = []
                 
-                # Сверка с Золотой Базой
+                # 🧠 СВЕРКА ЛИГ (Независимо от порядка слов)
                 for m in live_matches:
                     print(f"   [РАДАР-ПЕРЕРЫВ] {m['home']} - {m['away']} | 🏆 {m['league']}")
-                    
                     live_league_lower = m['league'].lower()
                     
                     for wl_league in WHITELIST:
                         base_league = wl_league.split(" - ")[0].strip().lower()
-                        if base_league in live_league_lower:
+                        required_parts = [p.strip() for p in base_league.split(':')]
+                        
+                        if all(part in live_league_lower for part in required_parts):
+                            # Подменяем кривое название с сайта на красивое из твоей базы
+                            m['beautiful_league'] = wl_league
                             valid_matches.append(m)
                             break 
                 
-                print(f"👀 Итог: Найдено на 1-м перерыве: {len(live_matches)} | Подходят под Белый Список: {len(valid_matches)}")
+                print(f"👀 Итог: Найдено на 1-м перерыве: {len(live_matches)} | В белом списке: {len(valid_matches)}")
 
-                # Проверка по твоей стратегии
+                # 🚀 ПРОВЕРКА ПО ТВОЕЙ СТРАТЕГИИ 🚀
                 for match in valid_matches:
                     m_id = match['id']
                     if m_id in notified_matches:
                         continue
 
-                    # 1. СЧЕТ: Тотал <= 1
+                    # 1. ПРОВЕРКА ГОЛОВ
                     goals_home = int(match['scoreHome'])
                     goals_away = int(match['scoreAway'])
-                    if (goals_home + goals_away) > 1:
+                    total_goals = goals_home + goals_away
+                    if total_goals > STRATEGY_MAX_GOALS:
                         continue 
 
-                    # 2. ТЯНЕМ СТАТИСТИКУ (За 1-й период)
+                    # 2. ПРОВЕРКА СТАТИСТИКИ (За 1-й период)
                     stat_url = f"{API_DOMAIN}/2/x/feed/df_st_1_{m_id}"
                     try:
                         stat_resp = await context.request.get(stat_url, headers=API_HEADERS)
                         stat_data = await stat_resp.text()
 
+                        # Защита: Если началась статистика 2-го периода, скипаем
                         if re.search(r"(2nd Period|2-й период|2\. Period)", stat_data, re.IGNORECASE):
                             continue
 
@@ -236,17 +243,17 @@ async def main():
 
                         total_pm = pm_home + pm_away
 
-                        # 3. ФИНАЛЬНЫЙ ТРИГГЕР: Броски от 13, Штрафы от 4
-                        if (shots_home >= 13 or shots_away >= 13) and total_pm >= 4:
+                        # 3. ФИНАЛЬНЫЙ ТРИГГЕР: Броски и Штрафы
+                        if (shots_home >= STRATEGY_MIN_SHOTS or shots_away >= STRATEGY_MIN_SHOTS) and total_pm >= STRATEGY_MIN_PIM:
                             
                             msg = (
                                 f"🔥 <b>ИДЕАЛЬНАЯ ПУШКА НА 2-Й ПЕРИОД!</b> 🔥\n\n"
-                                f"🏆 <b>Лига:</b> {match['league']}\n"
+                                f"🏆 <b>Лига:</b> {match['beautiful_league']}\n"
                                 f"🏒 <b>Матч:</b> {match['home']} - {match['away']}\n"
-                                f"⏱ <b>Статус:</b> Завершен 1-й период\n"
-                                f"📊 <b>Счет:</b> {goals_home}:{goals_away} (Тотал <= 1 ✅)\n\n"
-                                f"🎯 <b>Броски в створ:</b> {shots_home} - {shots_away} (Норма 13+ ✅)\n"
-                                f"⚖️ <b>Штрафное время:</b> {pm_home} - {pm_away} мин. (Норма 4+ ✅)\n\n"
+                                f"⏱ <b>Статус:</b> Перерыв после 1-го периода\n"
+                                f"📊 <b>Счет:</b> {goals_home}:{goals_away} (Тотал <= {STRATEGY_MAX_GOALS} ✅)\n\n"
+                                f"🎯 <b>Броски в створ:</b> {shots_home} - {shots_away} (Норма {STRATEGY_MIN_SHOTS}+ ✅)\n"
+                                f"⚖️ <b>Штрафное время:</b> {pm_home} - {pm_away} мин. (Норма {STRATEGY_MIN_PIM}+ ✅)\n\n"
                                 f"💡 <i>Агрессия зашкаливает, шайба не летит. Ждем прорыв во 2-м периоде!</i>\n"
                                 f"🔗 <a href='https://www.flashscore.com/match/{m_id}/#/match-summary/match-statistics/1'>Открыть статистику</a>"
                             )
