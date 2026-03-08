@@ -36,7 +36,6 @@ HARDCODED_WHITELIST = {
 }
 
 notified_matches = set()
-global_league_map = {} # Сырая база лиг прямо из сетевого трафика
 
 def load_whitelist():
     leagues = set(HARDCODED_WHITELIST)
@@ -66,10 +65,10 @@ API_DOMAIN = None
 API_HEADERS = None
 
 async def main():
-    print("--- ☢️ БОЕВОЙ СНАЙПЕР V14: СЕТЕВОЙ ПЕРЕХВАТ ---", flush=True)
-    print(f"✅ Элитных лиг на радаре: {len(WHITELIST)}")
+    print("--- 🎯 БОЕВОЙ СНАЙПЕР (ЧИСТАЯ ВЕРСИЯ) ---", flush=True)
+    print(f"✅ Элитных лиг в базе: {len(WHITELIST)}")
     
-    global API_DOMAIN, API_HEADERS, global_league_map
+    global API_DOMAIN, API_HEADERS
     
     async with async_playwright() as p:
         browser = await p.chromium.launch(
@@ -79,91 +78,77 @@ async def main():
         context = await browser.new_context(user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
         page = await context.new_page()
 
-        # --- ПЕРЕХВАТЧИК СЕТЕВОГО ТРАФИКА ---
-        async def response_handler(response):
+        async def token_handler(request):
             global API_DOMAIN, API_HEADERS
-            
-            # Ловим API Токен
-            if "x-fsign" in response.request.headers and "flashscore.ninja" in response.url:
-                if not API_HEADERS:
-                    match = re.search(r"(https://[a-zA-Z0-9.-]+\.flashscore\.ninja)", response.url)
-                    if match:
-                        API_DOMAIN = match.group(1)
-                        API_HEADERS = {
-                            "x-fsign": response.request.headers["x-fsign"],
-                            "X-Requested-With": "XMLHttpRequest",
-                            "Referer": "https://www.flashscore.com/",
-                            "Cache-Control": "no-cache"
-                        }
-                        print("   🔑 API-Токен захвачен!", flush=True)
+            if not API_HEADERS and "flashscore.ninja" in request.url and "x-fsign" in request.headers:
+                match = re.search(r"(https://[a-zA-Z0-9.-]+\.flashscore\.ninja)", request.url)
+                if match: 
+                    API_DOMAIN = match.group(1)
+                    API_HEADERS = {
+                        "x-fsign": request.headers["x-fsign"],
+                        "X-Requested-With": "XMLHttpRequest",
+                        "Referer": "https://www.flashscore.com/",
+                        "Cache-Control": "no-cache"
+                    }
+                    print("   🔑 API-Токен получен! Начинаю работу.", flush=True)
 
-            # ЛОВИМ СЫРУЮ БАЗУ ЛИГ (Как в Архивариусе!)
-            if "flashscore.ninja" in response.url:
-                try:
-                    text = await response.text()
-                    if "ZA÷" in text and "AA÷" in text:
-                        blocks = text.split("ZA÷")
-                        for block in blocks[1:]:
-                            league_name = block.split("¬")[0].strip()
-                            matches = re.findall(r"AA÷([a-zA-Z0-9]{8})", block)
-                            for m_id in matches:
-                                global_league_map[m_id] = league_name
-                except:
-                    pass
-
-        page.on("response", response_handler)
+        page.on("request", token_handler)
+        
+        # Идем на главную, чтобы 100% получить токен
+        await page.goto("https://www.flashscore.com/hockey/", timeout=60000)
         
         cycle = 1
         while True:
             try:
-                print(f"\n🔄 [Скан {cycle}] Обновляю радар и перехватываю трафик...", flush=True)
+                print(f"\n🔄 [Скан {cycle}] Проверяю LIVE матчи...", flush=True)
                 
-                # Идем напрямую в LIVE-вкладку. Это спровоцирует скачивание свежей базы
-                await page.goto("https://www.flashscore.com/hockey/live/", wait_until="domcontentloaded", timeout=60000)
-                
-                # Делаем микро-скролл, чтобы прогрузился DOM
-                await page.evaluate('''async () => {
-                    window.scrollBy(0, 2000);
-                }''')
-                
-                # Ждем 3 секунды, чтобы наш невидимый перехватчик успел распарсить сетевые пакеты
-                await asyncio.sleep(3)
-
                 if not API_HEADERS:
-                    print("   ⚠️ Жду API токен...")
-                    await asyncio.sleep(2)
+                    await asyncio.sleep(5)
                     continue
 
-                # --- ИЩЕМ МАТЧИ НА ЭКРАНЕ (Только ID и Счет) ---
+                # Кликаем на вкладку LIVE и прогружаем страницу
+                await page.evaluate('''async () => {
+                    let liveTab = Array.from(document.querySelectorAll('.filters__tab')).find(el => el.textContent.includes('LIVE'));
+                    if (liveTab) liveTab.click();
+                    await new Promise(r => setTimeout(r, 1500));
+                    window.scrollTo(0, document.body.scrollHeight);
+                    await new Promise(r => setTimeout(r, 500));
+                }''')
+
+                # Линейный сбор матчей и лиг
                 live_matches = await page.evaluate('''() => {
                     let matches = [];
-                    let elements = document.querySelectorAll('.event__match');
+                    let currentLeague = "Unknown";
+                    
+                    let elements = document.querySelectorAll('.event__header, .event__match');
                     
                     for (let el of elements) {
-                        let matchId = el.id.split('_').pop();
-                        let stageText = (el.querySelector('.event__stage--block')?.textContent || "").toLowerCase();
-                        
-                        // Ищем только 1-й период или перерыв
-                        if (stageText.includes('1st') || stageText.includes('1-й') || stageText.includes('перерыв') || stageText.includes('break') || stageText.includes('period 1')) {
+                        if (el.classList.contains('event__header')) {
+                            // Просто берем весь текст заголовка и меняем переносы строк на двоеточие (RUSSIA: KHL)
+                            currentLeague = el.innerText.trim().replace(/\\n/g, ': ');
+                        } 
+                        else if (el.classList.contains('event__match--live')) {
+                            let stageNode = el.querySelector('.event__stage--block');
+                            let stageText = stageNode ? stageNode.innerText.toLowerCase() : "";
                             
-                            let home = el.querySelector('.event__participant--home')?.textContent.trim() || "Team 1";
-                            let away = el.querySelector('.event__participant--away')?.textContent.trim() || "Team 2";
-                            
-                            let hMatch = (el.querySelector('.event__score--home')?.textContent || "").match(/\\d+/);
-                            let aMatch = (el.querySelector('.event__score--away')?.textContent || "").match(/\\d+/);
-                            
-                            let scoreHome = hMatch ? hMatch[0] : "0";
-                            let scoreAway = aMatch ? aMatch[0] : "0";
-                            let time = stageText.replace(/\\n/g, ' ').trim();
-                            
-                            matches.push({
-                                id: matchId, 
-                                home: home,
-                                away: away,
-                                scoreHome: scoreHome,
-                                scoreAway: scoreAway,
-                                time: time
-                            });
+                            if (stageText.includes('1st') || stageText.includes('1-й') || stageText.includes('перерыв') || stageText.includes('break')) {
+                                let matchId = el.id.split('_').pop();
+                                let home = el.querySelector('.event__participant--home')?.innerText.trim() || "Team 1";
+                                let away = el.querySelector('.event__participant--away')?.innerText.trim() || "Team 2";
+                                let scoreHome = el.querySelector('.event__score--home')?.innerText.trim() || "0";
+                                let scoreAway = el.querySelector('.event__score--away')?.innerText.trim() || "0";
+                                let time = stageText.replace(/\\n/g, ' ').trim();
+                                
+                                matches.push({
+                                    id: matchId, 
+                                    league: currentLeague,
+                                    home: home,
+                                    away: away,
+                                    scoreHome: scoreHome,
+                                    scoreAway: scoreAway,
+                                    time: time
+                                });
+                            }
                         }
                     }
                     return matches;
@@ -171,13 +156,8 @@ async def main():
 
                 valid_matches = []
                 
-                # --- ИДЕНТИФИКАЦИЯ И СВЕРКА ---
+                # Умный фильтр лиг
                 for m in live_matches:
-                    m_id = m['id']
-                    
-                    # 💥 МАГИЯ: Берем имя лиги прямо из перехваченного сетевого трафика! Никакого парсинга CSS!
-                    m['league'] = global_league_map.get(m_id, "Unknown League (Not in Feed)")
-                    
                     print(f"   [РАДАР] {m['home']} - {m['away']} | 🏆 {m['league']}")
                     
                     live_league_lower = m['league'].lower()
@@ -188,22 +168,22 @@ async def main():
                             valid_matches.append(m)
                             break 
                 
-                print(f"👀 Итог сканирования: Найдено в 1-м периоде {len(live_matches)} | Подходят под Белый Список: {len(valid_matches)}")
+                print(f"👀 Итог: Найдено в 1-м периоде {len(live_matches)} | Подходят под Белый Список: {len(valid_matches)}")
 
-                # --- РЕНТГЕН СТАТИСТИКИ ---
+                # Проверка по твоей стратегии
                 for match in valid_matches:
                     m_id = match['id']
                     if m_id in notified_matches:
                         continue
 
-                    if 'перерыв' not in match['time'] and 'break' not in match['time']:
+                    # 1. СТРОГО ПЕРЕРЫВ
+                    if 'перерыв' not in match['time'].lower() and 'break' not in match['time'].lower():
                         continue 
 
-                    goals_home = int(match['scoreHome'])
-                    goals_away = int(match['scoreAway'])
-                    total_goals = goals_home + goals_away
-                    
-                    if total_goals > 1:
+                    # 2. СЧЕТ: Тотал <= 1
+                    goals_home = int(match['scoreHome']) if match['scoreHome'].isdigit() else 0
+                    goals_away = int(match['scoreAway']) if match['scoreAway'].isdigit() else 0
+                    if (goals_home + goals_away) > 1:
                         continue 
 
                     stat_url = f"{API_DOMAIN}/2/x/feed/df_st_1_{m_id}"
@@ -232,7 +212,7 @@ async def main():
 
                         total_pm = pm_home + pm_away
 
-                        # 🚨 ТРИГГЕР: >=13 бросков и >= 4 мин штрафа
+                        # 3. ТРИГГЕР: Броски от 13, Штрафы от 4
                         if (shots_home >= 13 or shots_away >= 13) and total_pm >= 4:
                             
                             msg = (
@@ -252,13 +232,12 @@ async def main():
                             notified_matches.add(m_id)
 
                     except Exception as e:
-                        print(f"      ⚠️ Ошибка API: {e}", flush=True)
+                        pass
 
                     await asyncio.sleep(0.5)
 
             except Exception as e:
-                print(f"🚨 Системная Ошибка: {e}", flush=True)
-                traceback.print_exc()
+                print(f"🚨 Ошибка: {e}", flush=True)
             
             cycle += 1
             await asyncio.sleep(60)
