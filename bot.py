@@ -66,7 +66,7 @@ API_DOMAIN = None
 API_HEADERS = None
 
 async def main():
-    print("--- 🎯 БОЕВОЙ СНАЙПЕР V5: ПОЛНЫЙ ЗАХВАТ ---", flush=True)
+    print("--- 🎯 БОЕВОЙ СНАЙПЕР V6: РАДАР И ЗАХВАТ ---", flush=True)
     print(f"✅ Базовых лиг на радаре: {len(WHITELIST)}")
     
     global API_DOMAIN, API_HEADERS
@@ -145,10 +145,12 @@ async def main():
                     return matches;
                 }''')
 
-                # 🧠 УМНЫЙ ФИЛЬТР ЛИГ (РЕГИСТРОНЕЗАВИСИМЫЙ И БЕЗ PLAY-OFFS)
+                # 🧠 УМНЫЙ ФИЛЬТР ЛИГ И РАДАР
                 valid_matches = []
                 for m in live_matches:
                     live_league_lower = m['league'].lower()
+                    print(f"   [РАДАР] Вижу на сайте: {m['league']}")
+                    
                     for wl_league in WHITELIST:
                         # Отрезаем приписки про плей-офф и переводим в нижний регистр
                         base_league = wl_league.split(" - ")[0].strip().lower()
@@ -157,7 +159,7 @@ async def main():
                             valid_matches.append(m)
                             break # Нашли совпадение - забираем матч!
                 
-                print(f"👀 Найдено матчей в 1-м периоде/перерыве: {len(live_matches)} (В базе: {len(valid_matches)})")
+                print(f"👀 Итог сканирования: Найдено {len(live_matches)} | Взято в работу {len(valid_matches)}")
 
                 for match in valid_matches:
                     m_id = match['id']
