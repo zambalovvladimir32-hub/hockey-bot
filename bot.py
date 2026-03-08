@@ -36,7 +36,7 @@ HARDCODED_WHITELIST = {
 }
 
 notified_matches = set()
-league_cache = {} # КЭШ: {ID матча: "RUSSIA: KHL"}
+league_cache = {} # КЭШ тяжелого ядра
 
 def load_whitelist():
     leagues = set(HARDCODED_WHITELIST)
@@ -67,7 +67,7 @@ API_DOMAIN = None
 API_HEADERS = None
 
 async def main():
-    print("--- 🎯 БОЕВОЙ СНАЙПЕР V9: SEO-РЕНТГЕН ---", flush=True)
+    print("--- 🎯 БОЕВОЙ СНАЙПЕР V10: DUAL-CORE ---", flush=True)
     print(f"✅ Базовых лиг на радаре: {len(WHITELIST)}")
     
     global API_DOMAIN, API_HEADERS
@@ -106,16 +106,41 @@ async def main():
                     await asyncio.sleep(5)
                     continue
 
-                # 1. Собираем только ID матчей и базовую инфу
+                # ==========================================
+                # ЯДРО 1: УМНЫЙ ОБХОД DOM ДЕРЕВА (БЫСТРОЕ)
+                # ==========================================
                 live_matches = await page.evaluate('''() => {
                     let matches = [];
                     let elements = document.querySelectorAll('.event__match--live');
                     
                     for (let el of elements) {
+                        let prev = el.previousElementSibling;
+                        let currentLeague = "Unknown";
+                        
+                        // Идем вверх по списку, пока не встретим заголовок лиги
+                        while (prev) {
+                            if (prev.classList.contains('event__header')) {
+                                let typeNode = prev.querySelector('.event__title--type');
+                                let nameNode = prev.querySelector('.event__title--name');
+                                if (typeNode && nameNode) {
+                                    currentLeague = typeNode.innerText.trim() + ": " + nameNode.innerText.trim();
+                                } else {
+                                    let text = prev.innerText || "";
+                                    let lines = text.split('\\n').map(x => x.trim()).filter(x => x.length > 0);
+                                    if (lines.length >= 2) {
+                                        currentLeague = lines[0] + ": " + lines[1];
+                                    } else if (lines.length === 1) {
+                                        currentLeague = lines[0];
+                                    }
+                                }
+                                break;
+                            }
+                            prev = prev.previousElementSibling;
+                        }
+                        
                         let stageNode = el.querySelector('.event__stage--block');
                         let stageText = stageNode ? stageNode.innerText.toLowerCase() : "";
                         
-                        // Нам нужны матчи в 1-м периоде или на перерыве
                         if (stageText.includes('1st') || stageText.includes('1-й') || stageText.includes('перерыв') || stageText.includes('break')) {
                             let matchId = el.id.split('_').pop();
                             let home = el.querySelector('.event__participant--home')?.innerText.trim() || "Team1";
@@ -126,6 +151,7 @@ async def main():
                             
                             matches.push({
                                 id: matchId, 
+                                league: currentLeague,
                                 home: home,
                                 away: away,
                                 scoreHome: scoreHome,
@@ -139,32 +165,42 @@ async def main():
 
                 valid_matches = []
 
-                # 2. ИДЕНТИФИКАЦИЯ ЛИГ ЧЕРЕЗ SEO-ТЕГИ <TITLE>
+                # ==========================================
+                # ЯДРО 2: BROWSER-РЕНДЕР (БЕЗОТКАЗНОЕ)
+                # ==========================================
                 for m in live_matches:
                     m_id = m['id']
                     
-                    if m_id not in league_cache:
-                        try:
-                            # Делаем тихий фоновый запрос к странице матча
-                            html_url = f"https://www.flashscore.com/match/{m_id}/#/match-summary"
-                            html_resp = await context.request.get(html_url)
-                            html_text = await html_resp.text()
-                            
-                            # Ищем название лиги в теге <title>
-                            title_match = re.search(r"Hockey,\s*([^|<]+)", html_text, re.IGNORECASE)
-                            if title_match:
-                                league_cache[m_id] = title_match.group(1).strip()
-                            else:
-                                league_cache[m_id] = "Unknown Title"
-                        except Exception:
-                            league_cache[m_id] = "Error Fetching"
-                        
-                        await asyncio.sleep(0.3) # Анти-бан пауза
+                    # Если Быстрое ядро выдало ошибку - включаем Тяжелое
+                    if "unknown" in m['league'].lower():
+                        if m_id not in league_cache:
+                            try:
+                                # Открываем реальную невидимую вкладку
+                                match_page = await context.new_page()
+                                await match_page.goto(f"https://www.flashscore.com/match/{m_id}/#/match-summary", wait_until="domcontentloaded", timeout=15000)
+                                
+                                # Ждем, пока JS отработает и вставит слово Hockey в <title>
+                                try:
+                                    await match_page.wait_for_function('document.title.includes("Hockey")', timeout=5000)
+                                except: pass
+                                
+                                title = await match_page.title()
+                                await match_page.close()
+                                
+                                title_match = re.search(r"Hockey,\s*([^|]+)", title, re.IGNORECASE)
+                                if title_match:
+                                    league_cache[m_id] = title_match.group(1).strip()
+                                else:
+                                    league_cache[m_id] = "Title Parse Error"
+                            except Exception as e:
+                                try: await match_page.close() 
+                                except: pass
+                                league_cache[m_id] = "Network Error"
+                                
+                        m['league'] = league_cache.get(m_id, "Unknown Fallback")
 
-                    m['league'] = league_cache.get(m_id, "Unknown")
                     print(f"   [РАДАР] {m['home']} - {m['away']} | 🏆 {m['league']}")
 
-                    # Умный фильтр (регистронезависимый + без Play Offs)
                     live_league_lower = m['league'].lower()
                     
                     for wl_league in WHITELIST:
@@ -175,7 +211,9 @@ async def main():
                 
                 print(f"👀 Итог сканирования: Найдено {len(live_matches)} | В базе: {len(valid_matches)}")
 
-                # 3. ПРОВЕРКА СТАТИСТИКИ (Авторская Стратегия)
+                # ==========================================
+                # ЯДРО 3: РЕНТГЕН СТАТИСТИКИ (АВТОРСКАЯ СТРАТЕГИЯ)
+                # ==========================================
                 for match in valid_matches:
                     m_id = match['id']
                     if m_id in notified_matches:
