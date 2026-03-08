@@ -36,7 +36,6 @@ HARDCODED_WHITELIST = {
 }
 
 notified_matches = set()
-league_cache = {} # Кэш лиг: {match_id: league_name} чтобы не спамить API
 
 def load_whitelist():
     leagues = set(HARDCODED_WHITELIST)
@@ -67,7 +66,7 @@ API_DOMAIN = None
 API_HEADERS = None
 
 async def main():
-    print("--- 🎯 БОЕВОЙ СНАЙПЕР V7: ЧИСТЫЙ API-РАДАР ---", flush=True)
+    print("--- 🎯 БОЕВОЙ СНАЙПЕР V8: ТЕКСТОВЫЙ БУЛЬДОЗЕР ---", flush=True)
     print(f"✅ Базовых лиг на радаре: {len(WHITELIST)}")
     
     global API_DOMAIN, API_HEADERS
@@ -106,89 +105,74 @@ async def main():
                     await asyncio.sleep(5)
                     continue
 
-                # 1. Собираем только матчи (без попыток прочитать лигу из HTML)
+                # 1. Жесткий парсинг сырого текста с экрана
                 live_matches = await page.evaluate('''() => {
                     let matches = [];
-                    let elements = document.querySelectorAll('.event__match--live');
+                    let currentLeague = "Unknown";
+                    let elements = document.querySelectorAll('.event__header, .event__match--live');
                     
                     for (let el of elements) {
-                        let stageNode = el.querySelector('.event__stage--block');
-                        let stageText = stageNode ? stageNode.innerText.toLowerCase() : "";
-                        
-                        // Берем только 1-й период или перерыв
-                        if (stageText.includes('1st') || stageText.includes('1-й') || stageText.includes('перерыв') || stageText.includes('break')) {
-                            let matchId = el.id.split('_').pop();
-                            let home = el.querySelector('.event__participant--home').innerText.trim();
-                            let away = el.querySelector('.event__participant--away').innerText.trim();
-                            let scoreHome = el.querySelector('.event__score--home').innerText.trim();
-                            let scoreAway = el.querySelector('.event__score--away').innerText.trim();
-                            let time = stageText.replace(/\\n/g, ' ').trim();
+                        if (el.classList.contains('event__header')) {
+                            // БУЛЬДОЗЕР: Берем весь текст, бьем по переносам строк
+                            let text = el.innerText || "";
+                            let lines = text.split('\\n').map(x => x.trim()).filter(x => x.length > 2); // Игнорим пустые строки и эмодзи
                             
-                            matches.push({
-                                id: matchId, 
-                                home: home,
-                                away: away,
-                                scoreHome: scoreHome,
-                                scoreAway: scoreAway,
-                                time: time
-                            });
+                            // Обычно lines[0] = Страна (RUSSIA), lines[1] = Лига (KHL)
+                            if (lines.length >= 2) {
+                                currentLeague = lines[0] + ": " + lines[1];
+                            } else {
+                                currentLeague = lines.join(' ');
+                            }
+                        } else if (el.classList.contains('event__match--live')) {
+                            let stageNode = el.querySelector('.event__stage--block');
+                            let stageText = stageNode ? stageNode.innerText.toLowerCase() : "";
+                            
+                            // Нам нужны матчи, которые на ПЕРЕРЫВЕ или в конце 1-го периода
+                            if (stageText.includes('1st') || stageText.includes('1-й') || stageText.includes('перерыв') || stageText.includes('break')) {
+                                let matchId = el.id.split('_').pop();
+                                let home = el.querySelector('.event__participant--home')?.innerText.trim() || "Team1";
+                                let away = el.querySelector('.event__participant--away')?.innerText.trim() || "Team2";
+                                let scoreHome = el.querySelector('.event__score--home')?.innerText.trim() || "0";
+                                let scoreAway = el.querySelector('.event__score--away')?.innerText.trim() || "0";
+                                let time = stageText.replace(/\\n/g, ' ').trim();
+                                
+                                matches.push({
+                                    id: matchId, 
+                                    league: currentLeague,
+                                    home: home,
+                                    away: away,
+                                    scoreHome: scoreHome,
+                                    scoreAway: scoreAway,
+                                    time: time
+                                });
+                            }
                         }
                     }
                     return matches;
                 }''')
 
                 valid_matches = []
-
-                # 2. Узнаем лигу каждого матча через 100% надежный API
                 for m in live_matches:
-                    m_id = m['id']
-                    
-                    # Если мы еще не знаем лигу этого матча - спрашиваем у сервера
-                    if m_id not in league_cache:
-                        try:
-                            sui_url = f"{API_DOMAIN}/2/x/feed/df_sui_1_{m_id}"
-                            sui_resp = await context.request.get(sui_url, headers=API_HEADERS)
-                            sui_text = await sui_resp.text()
-                            
-                            league_match = re.search(r"ZA÷([^¬]+)", sui_text)
-                            if league_match:
-                                league_cache[m_id] = league_match.group(1).strip()
-                            else:
-                                league_cache[m_id] = "Unknown API League"
-                        except Exception:
-                            league_cache[m_id] = "Error"
-                        
-                        await asyncio.sleep(0.2) # Микро-пауза, чтобы не злить сервер
-
-                    m['league'] = league_cache[m_id]
                     print(f"   [РАДАР] {m['home']} - {m['away']} | 🏆 {m['league']}")
-
-                    # 3. Умный фильтр по Белому Списку (без учета регистра и стадий Play-Offs)
+                    
                     live_league_lower = m['league'].lower()
-                    is_valid = False
                     
                     for wl_league in WHITELIST:
                         base_league = wl_league.split(" - ")[0].strip().lower()
                         if base_league in live_league_lower:
-                            is_valid = True
-                            break
-                            
-                    if is_valid:
-                        valid_matches.append(m)
-
+                            valid_matches.append(m)
+                            break 
+                
                 print(f"👀 Итог сканирования: Найдено {len(live_matches)} | В базе: {len(valid_matches)}")
 
-                # 4. Проверяем статистику только для подходящих матчей
                 for match in valid_matches:
                     m_id = match['id']
                     if m_id in notified_matches:
                         continue
 
-                    # ПРОВЕРКА СТАТУСА: Нам нужен именно первый ПЕРЕРЫВ
                     if 'перерыв' not in match['time'] and 'break' not in match['time']:
                         continue 
 
-                    # ПРОВЕРКА ГОЛОВ: Тотал не больше 1 шайбы
                     goals_home = int(match['scoreHome']) if match['scoreHome'].isdigit() else 0
                     goals_away = int(match['scoreAway']) if match['scoreAway'].isdigit() else 0
                     total_goals = goals_home + goals_away
@@ -201,11 +185,9 @@ async def main():
                         stat_resp = await context.request.get(stat_url, headers=API_HEADERS)
                         stat_data = await stat_resp.text()
 
-                        # ДОП. ЗАЩИТА: Убеждаемся, что вкладки 2-го периода еще нет
                         if re.search(r"(2nd Period|2-й период|2\. Period)", stat_data, re.IGNORECASE):
                             continue
 
-                        # ИЗВЛЕКАЕМ БРОСКИ И ШТРАФЫ
                         sh = re.search(r"SG÷(?:Shots on Goal|Броски в створ)¬SH÷(\d+)¬SI÷(\d+)", stat_data, re.IGNORECASE)
                         pm = re.search(r"SG÷(?:Penalty Minutes|Штрафное время)¬SH÷(\d+)¬SI÷(\d+)", stat_data, re.IGNORECASE)
                         
@@ -224,9 +206,7 @@ async def main():
 
                         total_pm = pm_home + pm_away
 
-                        # 🚨 АВТОРСКИЙ ТРИГГЕР 🚨
-                        # - Бросков >= 13 (у любой из команд)
-                        # - Штрафов >= 4 минут (в сумме)
+                        # 🚨 ТВОЯ СТРАТЕГИЯ
                         if (shots_home >= 13 or shots_away >= 13) and total_pm >= 4:
                             
                             msg = (
@@ -246,19 +226,15 @@ async def main():
                             notified_matches.add(m_id)
 
                     except Exception as e:
-                        print(f"      ⚠️ Ошибка проверки API матча: {e}", flush=True)
+                        pass
 
                     await asyncio.sleep(0.5)
 
             except Exception as e:
-                print(f"🚨 Ошибка в цикле сканирования: {e}", flush=True)
-                traceback.print_exc()
+                print(f"🚨 Ошибка: {e}", flush=True)
             
             cycle += 1
             await asyncio.sleep(60)
 
 if __name__ == "__main__":
-    try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        print("\n🛑 Снайпер остановлен вручную.")
+    asyncio.run(main())
