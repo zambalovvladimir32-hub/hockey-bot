@@ -43,6 +43,7 @@ HARDCODED_WHITELIST = [
 ]
 
 notified_matches = set()
+tracked_matches = {} # 🎯 БАЗА ДЛЯ АВТО-ДОЖИМА И ОТЧЕТОВ
 
 def load_whitelist():
     leagues = set(HARDCODED_WHITELIST)
@@ -57,7 +58,6 @@ def load_whitelist():
 
 WHITELIST = load_whitelist()
 
-# Экранирование спецсимволов для HTML Телеграма
 def escape_html(text):
     return str(text).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
@@ -78,7 +78,7 @@ API_DOMAIN = None
 API_HEADERS = None
 
 async def main():
-    print("--- 🎯 БОЕВОЙ СНАЙПЕР: ИДЕАЛЬНАЯ ЛОГИКА ТОТАЛОВ ---", flush=True)
+    print("--- 🎯 БОЕВОЙ СНАЙПЕР: МОДУЛЬ АВТО-ДОЖИМА АКТИВИРОВАН ---", flush=True)
     print(f"✅ Всего лиг на радаре: {len(WHITELIST)}")
     
     global API_DOMAIN, API_HEADERS
@@ -111,7 +111,7 @@ async def main():
         cycle = 1
         while True:
             try:
-                print(f"\n🔄 [Скан {cycle}] Ищу перерывы...", flush=True)
+                print(f"\n🔄 [Скан {cycle}] Радар крутится... | 🎯 В слежке: {len(tracked_matches)}", flush=True)
                 
                 if not API_HEADERS:
                     await asyncio.sleep(5)
@@ -125,6 +125,7 @@ async def main():
                     await new Promise(r => setTimeout(r, 500));
                 }''')
 
+                # ТЕПЕРЬ СОБИРАЕМ ВООБЩЕ ВСЕ МАТЧИ В ЛАЙВЕ
                 live_matches = await page.evaluate('''() => {
                     let matches = [];
                     let elements = document.querySelectorAll('[id^="g_4_"]');
@@ -133,91 +134,136 @@ async def main():
                         let stageNode = el.querySelector('[class*="stage--block"]');
                         let stageText = stageNode ? stageNode.textContent.toLowerCase() : "";
                         
-                        if (stageText.includes('перерыв') || stageText.includes('break') || stageText.includes('pause') || stageText.includes('intermission')) {
-                            if (!stageText.includes('2nd') && !stageText.includes('2-й') && !stageText.includes('3rd') && !stageText.includes('3-й') && !stageText.includes('2.') && !stageText.includes('3.')) {
-                                
-                                let currentLeague = "Unknown";
-                                let prev = el.previousElementSibling;
-                                
-                                while (prev && prev.id && prev.id.startsWith('g_4_')) {
-                                    prev = prev.previousElementSibling;
+                        let currentLeague = "Unknown";
+                        let prev = el.previousElementSibling;
+                        
+                        while (prev && prev.id && prev.id.startsWith('g_4_')) {
+                            prev = prev.previousElementSibling;
+                        }
+                        
+                        if (prev) {
+                            let titleAttr = prev.getAttribute('title');
+                            if (titleAttr && titleAttr.includes(':')) {
+                                currentLeague = titleAttr;
+                            } else {
+                                let raw = prev.innerHTML.replace(/<svg[^>]*>.*?<\\/svg>/gi, '').replace(/<[^>]+>/g, '|');
+                                let parts = raw.split('|').map(s => s.trim()).filter(s => s.length > 1);
+                                if (parts.length >= 2) {
+                                    currentLeague = parts[0] + ": " + parts[1];
+                                } else if (parts.length === 1) {
+                                    currentLeague = parts[0];
+                                } else {
+                                    currentLeague = prev.textContent.trim().replace(/\\n/g, ': ');
                                 }
-                                
-                                if (prev) {
-                                    let titleAttr = prev.getAttribute('title');
-                                    if (titleAttr && titleAttr.includes(':')) {
-                                        currentLeague = titleAttr;
-                                    } else {
-                                        let raw = prev.innerHTML.replace(/<svg[^>]*>.*?<\\/svg>/gi, '').replace(/<[^>]+>/g, '|');
-                                        let parts = raw.split('|').map(s => s.trim()).filter(s => s.length > 1);
-                                        if (parts.length >= 2) {
-                                            currentLeague = parts[0] + ": " + parts[1];
-                                        } else if (parts.length === 1) {
-                                            currentLeague = parts[0];
-                                        } else {
-                                            currentLeague = prev.textContent.trim().replace(/\\n/g, ': ');
-                                        }
-                                    }
-                                }
-
-                                let matchId = el.id.split('_').pop();
-                                let home = el.querySelector('[class*="participant--home"]')?.textContent.trim() || "Team 1";
-                                let away = el.querySelector('[class*="participant--away"]')?.textContent.trim() || "Team 2";
-                                let hMatch = (el.querySelector('[class*="score--home"]')?.textContent || "").match(/\\d+/);
-                                let aMatch = (el.querySelector('[class*="score--away"]')?.textContent || "").match(/\\d+/);
-                                
-                                matches.push({
-                                    id: matchId, 
-                                    league: currentLeague,
-                                    home: home,
-                                    away: away,
-                                    scoreHome: hMatch ? hMatch[0] : "0",
-                                    scoreAway: aMatch ? aMatch[0] : "0",
-                                    time: stageText.replace(/\\n/g, ' ').trim()
-                                });
                             }
                         }
+
+                        let matchId = el.id.split('_').pop();
+                        let home = el.querySelector('[class*="participant--home"]')?.textContent.trim() || "Team 1";
+                        let away = el.querySelector('[class*="participant--away"]')?.textContent.trim() || "Team 2";
+                        let hMatch = (el.querySelector('[class*="score--home"]')?.textContent || "").match(/\\d+/);
+                        let aMatch = (el.querySelector('[class*="score--away"]')?.textContent || "").match(/\\d+/);
+                        
+                        matches.push({
+                            id: matchId, 
+                            league: currentLeague,
+                            home: home,
+                            away: away,
+                            scoreHome: hMatch ? hMatch[0] : "0",
+                            scoreAway: aMatch ? aMatch[0] : "0",
+                            time: stageText.replace(/\\n/g, ' ').trim()
+                        });
                     }
                     return matches;
                 }''')
 
-                valid_matches = []
+                valid_matches_for_new_signals = []
                 
+                # ПРОГОНЯЕМ МАТЧИ ЧЕРЕЗ ФИЛЬТРЫ
                 for m in live_matches:
-                    live_league_lower = m['league'].lower()
-                    
-                    for wl_league in WHITELIST:
-                        base_league = wl_league.split(" - ")[0].strip().lower()
-                        parts = [p.strip() for p in base_league.split(':')]
+                    m_id = m['id']
+                    stageText = m['time']
+                    goals_home = int(m['scoreHome'])
+                    goals_away = int(m['scoreAway'])
+                    total_goals = goals_home + goals_away
+
+                    # ==================================================
+                    # 1. МОДУЛЬ ОТЧЕТОВ: ПРОВЕРЯЕМ УЖЕ НАЙДЕННЫЕ МАТЧИ
+                    # ==================================================
+                    if m_id in tracked_matches:
+                        tracked = tracked_matches[m_id]
+
+                        # ⚽ ПРОВЕРКА НА ГОЛ (Тотал стал больше, чем был)
+                        if total_goals > tracked['initial_goals']:
+                            msg = (
+                                f"✅ <b>ЦЕЛЬ ПОРАЖЕНА! (ГОЛ)</b> ✅\n\n"
+                                f"🏆 <b>Лига:</b> {escape_html(tracked['league'])}\n"
+                                f"🏒 <b>Матч:</b> {escape_html(tracked['home'])} - {escape_html(tracked['away'])}\n"
+                                f"🥅 <b>Счет стал:</b> {goals_home}:{goals_away}\n"
+                                f"💸 <i>Ставка зашла! Идем дальше!</i>"
+                            )
+                            print(f"   🎯 ОТЧЕТ: ГОЛ! {tracked['home']} - {tracked['away']} ({goals_home}:{goals_away})")
+                            await send_tg(msg)
+                            del tracked_matches[m_id] # Удаляем из слежки
+                            continue
+
+                        # 🛑 ПРОВЕРКА НА МИНУС (Начался второй перерыв или матч кончился)
+                        is_2nd_break = any(x in stageText for x in ['перерыв', 'break', 'pause', 'intermission', 'rust']) and any(x in stageText for x in ['2nd', '2-й', '2.'])
+                        is_finished = any(x in stageText for x in ['завершен', 'finished', 'конец', 'ft', 'после'])
+
+                        if is_2nd_break or is_finished:
+                            msg = (
+                                f"❌ <b>ПРОМАХ (МИНУС)</b> ❌\n\n"
+                                f"🏆 <b>Лига:</b> {escape_html(tracked['league'])}\n"
+                                f"🏒 <b>Матч:</b> {escape_html(tracked['home'])} - {escape_html(tracked['away'])}\n"
+                                f"🛑 <b>Итог:</b> Второй период засушили.\n"
+                                f"📉 <b>Счет остался:</b> {goals_home}:{goals_away}"
+                            )
+                            print(f"   ☠️ ОТЧЕТ: МИНУС. {tracked['home']} - {tracked['away']} ({goals_home}:{goals_away})")
+                            await send_tg(msg)
+                            del tracked_matches[m_id] # Удаляем из слежки
+                            continue
                         
-                        if len(parts) >= 2:
-                            country_part = parts[0]
-                            league_part = parts[-1]
-                            
-                            country_match = (country_part in live_league_lower) or \
-                                            (country_part == "czech republic" and "czechia" in live_league_lower)
-                            
-                            league_match = (league_part in live_league_lower) or \
-                                           (league_part == "ehl" and "elitehockey" in live_league_lower) or \
-                                           (league_part == "del" and "deutsche" in live_league_lower)
-                            
-                            if country_match and league_match:
-                                m['beautiful_league'] = wl_league
-                                valid_matches.append(m)
-                                break
-                        else:
-                            if base_league in live_league_lower:
-                                m['beautiful_league'] = wl_league
-                                valid_matches.append(m)
-                                break
-                
-                print(f"👀 Найдено на 1-м перерыве: {len(live_matches)} | В белом списке: {len(valid_matches)}")
+                        # Если гола нет и перерыв еще не настал - просто идем дальше
+                        continue 
 
-                for match in valid_matches:
-                    m_id = match['id']
+                    # ==================================================
+                    # 2. МОДУЛЬ РАДАРА: ИЩЕМ НОВЫЕ СИГНАЛЫ
+                    # ==================================================
                     if m_id in notified_matches:
-                        continue
+                        continue # Если уже давали сигнал, но слежка кончилась, пропускаем
 
+                    # Ищем ТОЛЬКО 1-й перерыв для новых сигналов
+                    is_1st_break = any(x in stageText for x in ['перерыв', 'break', 'pause', 'intermission', 'rust']) and not any(x in stageText for x in ['2nd', '2-й', '3rd', '3-й', '2.', '3.'])
+
+                    if is_1st_break:
+                        live_league_lower = m['league'].lower()
+                        for wl_league in WHITELIST:
+                            base_league = wl_league.split(" - ")[0].strip().lower()
+                            parts = [p.strip() for p in base_league.split(':')]
+                            
+                            if len(parts) >= 2:
+                                country_match = (parts[0] in live_league_lower) or (parts[0] == "czech republic" and "czechia" in live_league_lower)
+                                league_match = (parts[-1] in live_league_lower) or (parts[-1] == "ehl" and "elitehockey" in live_league_lower) or (parts[-1] == "del" and "deutsche" in live_league_lower)
+                                
+                                if country_match and league_match:
+                                    m['beautiful_league'] = wl_league
+                                    valid_matches_for_new_signals.append(m)
+                                    break
+                            else:
+                                if base_league in live_league_lower:
+                                    m['beautiful_league'] = wl_league
+                                    valid_matches_for_new_signals.append(m)
+                                    break
+
+                # ==================================================
+                # 3. ТЯНЕМ СТАТИСТИКУ И СТРЕЛЯЕМ СИГНАЛАМИ
+                # ==================================================
+                if len(valid_matches_for_new_signals) > 0:
+                    print(f"👀 Найдено новых матчей на перерыве: {len(valid_matches_for_new_signals)}")
+
+                for match in valid_matches_for_new_signals:
+                    m_id = match['id']
                     goals_home = int(match['scoreHome'])
                     goals_away = int(match['scoreAway'])
                     total_goals = goals_home + goals_away
@@ -238,7 +284,6 @@ async def main():
                         pm = re.search(r"SG÷(?:PIM|Penalty Minutes|Штрафное время|Штраф)¬SH÷(\d+)¬SI÷(\d+)", stat_data, re.IGNORECASE)
                         
                         if not sh: 
-                            print(f"   ⚠️ Нет данных по броскам: {match['home']} - {match['away']}")
                             continue 
 
                         shots_home = int(sh.group(1))
@@ -255,11 +300,11 @@ async def main():
 
                         total_pm = pm_home + pm_away
 
-                        print(f"   📊 СТАТА | {match['home']} - {match['away']} | Общие броски: {total_shots} (нужно {STRATEGY_MIN_SHOTS}) | Общий штраф: {total_pm}м (нужно {STRATEGY_MIN_PIM}м)")
+                        print(f"   📊 СТАТА | {match['home']} - {match['away']} | Броски: {total_shots}/{STRATEGY_MIN_SHOTS} | Штраф: {total_pm}м/{STRATEGY_MIN_PIM}м")
 
+                        # ФИНАЛЬНЫЙ ТРИГГЕР
                         if total_shots >= STRATEGY_MIN_SHOTS and total_pm >= STRATEGY_MIN_PIM:
                             
-                            # 🔥 ИСПРАВЛЕННЫЙ HTML-ТЕКСТ (ЗАМЕНЕН ЗНАК < НА ≤) 🔥
                             safe_league = escape_html(match['beautiful_league'])
                             safe_home = escape_html(match['home'])
                             safe_away = escape_html(match['away'])
@@ -272,13 +317,21 @@ async def main():
                                 f"📊 <b>Счет:</b> {goals_home}:{goals_away} (Тотал ≤ {STRATEGY_MAX_GOALS} ✅)\n\n"
                                 f"🎯 <b>Броски в створ:</b> {shots_home} - {shots_away} (Всего {total_shots}, Норма {STRATEGY_MIN_SHOTS}+ ✅)\n"
                                 f"⚖️ <b>Штрафное время:</b> {pm_home} - {pm_away} мин. (Всего {total_pm}м, Норма {STRATEGY_MIN_PIM}+ ✅)\n\n"
-                                f"💡 <i>Агрессия зашкаливает, шайба не летит. Ждем прорыв во 2-м периоде!</i>\n"
+                                f"💡 <i>Беру матч под наблюдение. Ждем гол!</i>\n"
                                 f"🔗 <a href='https://www.flashscore.com/match/{m_id}/#/match-summary/match-statistics/1'>Открыть статистику</a>"
                             )
                             
-                            print(f"   ✅ СИГНАЛ ОТПРАВЛЕН В ТЕЛЕГРАМ! {match['home']} - {match['away']}")
+                            print(f"   ✅ СИГНАЛ! Беру в слежку: {match['home']} - {match['away']}")
                             await send_tg(msg)
+                            
+                            # ДОБАВЛЯЕМ В БАЗУ ДЛЯ АВТО-ДОЖИМА
                             notified_matches.add(m_id)
+                            tracked_matches[m_id] = {
+                                'home': match['home'],
+                                'away': match['away'],
+                                'league': match['beautiful_league'],
+                                'initial_goals': total_goals
+                            }
                         else:
                             print(f"   ❌ Не хватило цифр: {match['home']} - {match['away']}")
 
