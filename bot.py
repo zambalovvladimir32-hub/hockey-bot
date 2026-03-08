@@ -65,7 +65,7 @@ API_DOMAIN = None
 API_HEADERS = None
 
 async def main():
-    print("--- 🎯 БОЕВОЙ СНАЙПЕР (ЧИСТАЯ ВЕРСИЯ) ---", flush=True)
+    print("--- 🎯 БОЕВОЙ СНАЙПЕР (ИДЕАЛЬНЫЙ ТАЙМИНГ) ---", flush=True)
     print(f"✅ Элитных лиг в базе: {len(WHITELIST)}")
     
     global API_DOMAIN, API_HEADERS
@@ -93,61 +93,79 @@ async def main():
                     print("   🔑 API-Токен получен! Начинаю работу.", flush=True)
 
         page.on("request", token_handler)
-        
-        # Идем на главную, чтобы 100% получить токен
         await page.goto("https://www.flashscore.com/hockey/", timeout=60000)
         
         cycle = 1
         while True:
             try:
-                print(f"\n🔄 [Скан {cycle}] Проверяю LIVE матчи...", flush=True)
+                print(f"\n🔄 [Скан {cycle}] Жду перерывы в LIVE матчах...", flush=True)
                 
                 if not API_HEADERS:
                     await asyncio.sleep(5)
                     continue
 
-                # Кликаем на вкладку LIVE и прогружаем страницу
+                # Кликаем на LIVE и прогружаем страницу вниз, чтобы появились все матчи
                 await page.evaluate('''async () => {
                     let liveTab = Array.from(document.querySelectorAll('.filters__tab')).find(el => el.textContent.includes('LIVE'));
                     if (liveTab) liveTab.click();
-                    await new Promise(r => setTimeout(r, 1500));
+                    await new Promise(r => setTimeout(r, 1000));
                     window.scrollTo(0, document.body.scrollHeight);
                     await new Promise(r => setTimeout(r, 500));
                 }''')
 
-                # Линейный сбор матчей и лиг
+                # СТРОГИЙ СБОР: ТОЛЬКО ПЕРЕРЫВЫ И РЕАЛЬНЫЕ НАЗВАНИЯ ЛИГ (ЧЕРЕЗ textContent)
                 live_matches = await page.evaluate('''() => {
                     let matches = [];
                     let currentLeague = "Unknown";
                     
+                    // Собираем всё подряд, чтобы не нарушать порядок
                     let elements = document.querySelectorAll('.event__header, .event__match');
                     
                     for (let el of elements) {
                         if (el.classList.contains('event__header')) {
-                            // Просто берем весь текст заголовка и меняем переносы строк на двоеточие (RUSSIA: KHL)
-                            currentLeague = el.innerText.trim().replace(/\\n/g, ': ');
-                        } 
-                        else if (el.classList.contains('event__match--live')) {
-                            let stageNode = el.querySelector('.event__stage--block');
-                            let stageText = stageNode ? stageNode.innerText.toLowerCase() : "";
+                            // ИСПОЛЬЗУЕМ textContent - работает всегда, даже в скрытом браузере
+                            let countryNode = el.querySelector('.event__title--type');
+                            let nameNode = el.querySelector('.event__title--name');
                             
-                            if (stageText.includes('1st') || stageText.includes('1-й') || stageText.includes('перерыв') || stageText.includes('break')) {
-                                let matchId = el.id.split('_').pop();
-                                let home = el.querySelector('.event__participant--home')?.innerText.trim() || "Team 1";
-                                let away = el.querySelector('.event__participant--away')?.innerText.trim() || "Team 2";
-                                let scoreHome = el.querySelector('.event__score--home')?.innerText.trim() || "0";
-                                let scoreAway = el.querySelector('.event__score--away')?.innerText.trim() || "0";
-                                let time = stageText.replace(/\\n/g, ' ').trim();
-                                
-                                matches.push({
-                                    id: matchId, 
-                                    league: currentLeague,
-                                    home: home,
-                                    away: away,
-                                    scoreHome: scoreHome,
-                                    scoreAway: scoreAway,
-                                    time: time
-                                });
+                            let country = countryNode ? countryNode.textContent.trim() : "";
+                            let name = nameNode ? nameNode.textContent.trim() : "";
+                            
+                            if (country && name) {
+                                currentLeague = country + ": " + name;
+                            } else {
+                                currentLeague = el.textContent.trim().replace(/\\n/g, ' ');
+                            }
+                        } 
+                        else if (el.classList.contains('event__match')) {
+                            let stageNode = el.querySelector('.event__stage--block');
+                            let stageText = stageNode ? stageNode.textContent.toLowerCase() : "";
+                            
+                            // 🚨 СТРОГОЕ УСЛОВИЕ: ТОЛЬКО ПЕРЕРЫВ (исключаем 2й и 3й) 🚨
+                            if (stageText.includes('перерыв') || stageText.includes('break')) {
+                                if (!stageText.includes('2nd') && !stageText.includes('2-й') && !stageText.includes('3rd') && !stageText.includes('3-й')) {
+                                    
+                                    let matchId = el.id.split('_').pop();
+                                    
+                                    let home = el.querySelector('.event__participant--home')?.textContent.trim() || "Team 1";
+                                    let away = el.querySelector('.event__participant--away')?.textContent.trim() || "Team 2";
+                                    
+                                    // Вытаскиваем только цифры из счета
+                                    let hMatch = (el.querySelector('.event__score--home')?.textContent || "").match(/\\d+/);
+                                    let aMatch = (el.querySelector('.event__score--away')?.textContent || "").match(/\\d+/);
+                                    
+                                    let scoreHome = hMatch ? hMatch[0] : "0";
+                                    let scoreAway = aMatch ? aMatch[0] : "0";
+                                    
+                                    matches.push({
+                                        id: matchId, 
+                                        league: currentLeague,
+                                        home: home,
+                                        away: away,
+                                        scoreHome: scoreHome,
+                                        scoreAway: scoreAway,
+                                        time: stageText.replace(/\\n/g, ' ').trim()
+                                    });
+                                }
                             }
                         }
                     }
@@ -156,9 +174,9 @@ async def main():
 
                 valid_matches = []
                 
-                # Умный фильтр лиг
+                # Умная сверка с Золотой Базой (Уже с нормальными названиями)
                 for m in live_matches:
-                    print(f"   [РАДАР] {m['home']} - {m['away']} | 🏆 {m['league']}")
+                    print(f"   [РАДАР-ПЕРЕРЫВ] {m['home']} - {m['away']} | 🏆 {m['league']}")
                     
                     live_league_lower = m['league'].lower()
                     
@@ -168,7 +186,7 @@ async def main():
                             valid_matches.append(m)
                             break 
                 
-                print(f"👀 Итог: Найдено в 1-м периоде {len(live_matches)} | Подходят под Белый Список: {len(valid_matches)}")
+                print(f"👀 Итог: Найдено на 1-м перерыве: {len(live_matches)} | Подходят под Белый Список: {len(valid_matches)}")
 
                 # Проверка по твоей стратегии
                 for match in valid_matches:
@@ -176,21 +194,19 @@ async def main():
                     if m_id in notified_matches:
                         continue
 
-                    # 1. СТРОГО ПЕРЕРЫВ
-                    if 'перерыв' not in match['time'].lower() and 'break' not in match['time'].lower():
-                        continue 
-
-                    # 2. СЧЕТ: Тотал <= 1
-                    goals_home = int(match['scoreHome']) if match['scoreHome'].isdigit() else 0
-                    goals_away = int(match['scoreAway']) if match['scoreAway'].isdigit() else 0
+                    # 1. СЧЕТ: Тотал <= 1
+                    goals_home = int(match['scoreHome'])
+                    goals_away = int(match['scoreAway'])
                     if (goals_home + goals_away) > 1:
                         continue 
 
+                    # 2. ТЯНЕМ СТАТИСТИКУ (За 1-й период)
                     stat_url = f"{API_DOMAIN}/2/x/feed/df_st_1_{m_id}"
                     try:
                         stat_resp = await context.request.get(stat_url, headers=API_HEADERS)
                         stat_data = await stat_resp.text()
 
+                        # Доп. страховка: если появилась вкладка 2-го периода, значит перерыв кончился
                         if re.search(r"(2nd Period|2-й период|2\. Period)", stat_data, re.IGNORECASE):
                             continue
 
@@ -212,7 +228,7 @@ async def main():
 
                         total_pm = pm_home + pm_away
 
-                        # 3. ТРИГГЕР: Броски от 13, Штрафы от 4
+                        # 3. ФИНАЛЬНЫЙ ТРИГГЕР: Броски от 13, Штрафы от 4
                         if (shots_home >= 13 or shots_away >= 13) and total_pm >= 4:
                             
                             msg = (
