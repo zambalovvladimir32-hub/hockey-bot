@@ -11,14 +11,14 @@ from playwright.async_api import async_playwright
 # ==========================================
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("CHANNEL_ID")
-WHITELIST_FILE = "whitelist.json" # Файл для твоих личных лиг
+WHITELIST_FILE = "whitelist.json"
 
 # 🚨 ТВОИ ТРИГГЕРЫ 🚨
-STRATEGY_MAX_GOALS = 1    # Максимум голов (в сумме)
-STRATEGY_MIN_SHOTS = 13   # Минимум бросков (хотя бы у одной команды)
-STRATEGY_MIN_PIM = 4      # Минимум штрафных минут (в сумме за 1 период)
+STRATEGY_MAX_GOALS = 1    
+STRATEGY_MIN_SHOTS = 13   
+STRATEGY_MIN_PIM = 4      
 
-# 🏆 БАЗОВЫЙ БЕЛЫЙ СПИСОК (Можешь добавлять сюда или в whitelist.json)
+# 🏆 БАЗОВЫЙ БЕЛЫЙ СПИСОК
 HARDCODED_WHITELIST = [
     "AUSTRIA: ICE Hockey League",
     "AUSTRIA: ICE Hockey League - Play Offs",
@@ -44,7 +44,6 @@ HARDCODED_WHITELIST = [
 
 notified_matches = set()
 
-# --- ЗАГРУЗКА ВСЕХ ТВОИХ ЛИГ ---
 def load_whitelist():
     leagues = set(HARDCODED_WHITELIST)
     if os.path.exists(WHITELIST_FILE):
@@ -52,14 +51,12 @@ def load_whitelist():
             with open(WHITELIST_FILE, "r", encoding="utf-8") as f:
                 user_leagues = json.load(f)
                 leagues.update(user_leagues)
-                print(f"📁 Подгружено {len(user_leagues)} лиг из файла whitelist.json")
         except Exception as e: 
-            print(f"⚠️ Ошибка чтения whitelist.json: {e}")
+            pass
     return leagues
 
 WHITELIST = load_whitelist()
 
-# --- ОТПРАВКА В ТЕЛЕГРАМ ---
 def send_tg_sync(text):
     if not TOKEN or not CHAT_ID: return
     try:
@@ -77,9 +74,8 @@ API_DOMAIN = None
 API_HEADERS = None
 
 async def main():
-    print("--- 🎯 БОЕВОЙ СНАЙПЕР: СТРАТЕГИЯ АКТИВИРОВАНА ---", flush=True)
+    print("--- 🎯 БОЕВОЙ СНАЙПЕР: РЕНТГЕН-ВЕРСИЯ ---", flush=True)
     print(f"✅ Всего лиг на радаре: {len(WHITELIST)}")
-    print(f"⚙️ Настройки: Голы <= {STRATEGY_MAX_GOALS} | Броски >= {STRATEGY_MIN_SHOTS} | Штрафы >= {STRATEGY_MIN_PIM}м")
     
     global API_DOMAIN, API_HEADERS
     
@@ -103,7 +99,7 @@ async def main():
                         "Referer": "https://www.flashscore.com/",
                         "Cache-Control": "no-cache"
                     }
-                    print("   🔑 API-Токен захвачен. Погнали!", flush=True)
+                    print("   🔑 API-Токен захвачен. Доступ к базе открыт!", flush=True)
 
         page.on("request", token_handler)
         await page.goto("https://www.flashscore.com/hockey/", timeout=60000)
@@ -111,7 +107,7 @@ async def main():
         cycle = 1
         while True:
             try:
-                print(f"\n🔄 [Скан {cycle}] Жду ПЕРЕРЫВЫ в LIVE матчах...", flush=True)
+                print(f"\n🔄 [Скан {cycle}] Ищу перерывы...", flush=True)
                 
                 if not API_HEADERS:
                     await asyncio.sleep(5)
@@ -125,7 +121,6 @@ async def main():
                     await new Promise(r => setTimeout(r, 500));
                 }''')
 
-                # СБОР МАТЧЕЙ (ТОЛЬКО НА ПЕРЕРЫВЕ) И СТРУКТУРНЫЙ ПАРСИНГ ЛИГ
                 live_matches = await page.evaluate('''() => {
                     let matches = [];
                     let elements = document.querySelectorAll('[id^="g_4_"]');
@@ -134,9 +129,9 @@ async def main():
                         let stageNode = el.querySelector('[class*="stage--block"]');
                         let stageText = stageNode ? stageNode.textContent.toLowerCase() : "";
                         
-                        // ИЩЕМ ТОЛЬКО ПЕРЕРЫВ ПОСЛЕ 1-ГО ПЕРИОДА
-                        if (stageText.includes('перерыв') || stageText.includes('break')) {
-                            if (!stageText.includes('2nd') && !stageText.includes('2-й') && !stageText.includes('3rd') && !stageText.includes('3-й')) {
+                        // 🔥 УЧТЕНЫ ВСЕ СТАТУСЫ: BREAK, PAUSE, ПЕРЕРЫВ 🔥
+                        if (stageText.includes('перерыв') || stageText.includes('break') || stageText.includes('pause') || stageText.includes('intermission')) {
+                            if (!stageText.includes('2nd') && !stageText.includes('2-й') && !stageText.includes('3rd') && !stageText.includes('3-й') && !stageText.includes('2.') && !stageText.includes('3.')) {
                                 
                                 let currentLeague = "Unknown";
                                 let prev = el.previousElementSibling;
@@ -185,50 +180,66 @@ async def main():
 
                 valid_matches = []
                 
-                # 🧠 СВЕРКА ЛИГ (Независимо от порядка слов)
+                # 🧠 СМАРТ-СВЕРКА (Переводчик CZECHIA и EHL)
                 for m in live_matches:
-                    print(f"   [РАДАР-ПЕРЕРЫВ] {m['home']} - {m['away']} | 🏆 {m['league']}")
                     live_league_lower = m['league'].lower()
                     
                     for wl_league in WHITELIST:
                         base_league = wl_league.split(" - ")[0].strip().lower()
-                        required_parts = [p.strip() for p in base_league.split(':')]
+                        parts = [p.strip() for p in base_league.split(':')]
                         
-                        if all(part in live_league_lower for part in required_parts):
-                            # Подменяем кривое название с сайта на красивое из твоей базы
-                            m['beautiful_league'] = wl_league
-                            valid_matches.append(m)
-                            break 
+                        if len(parts) >= 2:
+                            country_part = parts[0]
+                            league_part = parts[-1]
+                            
+                            country_match = (country_part in live_league_lower) or \
+                                            (country_part == "czech republic" and "czechia" in live_league_lower)
+                            
+                            league_match = (league_part in live_league_lower) or \
+                                           (league_part == "ehl" and "elitehockey" in live_league_lower) or \
+                                           (league_part == "del" and "deutsche" in live_league_lower)
+                            
+                            if country_match and league_match:
+                                m['beautiful_league'] = wl_league
+                                valid_matches.append(m)
+                                break
+                        else:
+                            if base_league in live_league_lower:
+                                m['beautiful_league'] = wl_league
+                                valid_matches.append(m)
+                                break
                 
-                print(f"👀 Итог: Найдено на 1-м перерыве: {len(live_matches)} | В белом списке: {len(valid_matches)}")
+                print(f"👀 Найдено на 1-м перерыве: {len(live_matches)} | В белом списке: {len(valid_matches)}")
 
-                # 🚀 ПРОВЕРКА ПО ТВОЕЙ СТРАТЕГИИ 🚀
                 for match in valid_matches:
                     m_id = match['id']
                     if m_id in notified_matches:
                         continue
 
-                    # 1. ПРОВЕРКА ГОЛОВ
                     goals_home = int(match['scoreHome'])
                     goals_away = int(match['scoreAway'])
                     total_goals = goals_home + goals_away
+                    
+                    # Фильтр по голам (Тотал <= 1)
                     if total_goals > STRATEGY_MAX_GOALS:
+                        print(f"   ❌ Пропуск: {match['home']} - {match['away']} | Слишком много голов: {total_goals}")
                         continue 
 
-                    # 2. ПРОВЕРКА СТАТИСТИКИ (За 1-й период)
                     stat_url = f"{API_DOMAIN}/2/x/feed/df_st_1_{m_id}"
                     try:
                         stat_resp = await context.request.get(stat_url, headers=API_HEADERS)
                         stat_data = await stat_resp.text()
 
-                        # Защита: Если началась статистика 2-го периода, скипаем
                         if re.search(r"(2nd Period|2-й период|2\. Period)", stat_data, re.IGNORECASE):
                             continue
 
-                        sh = re.search(r"SG÷(?:Shots on Goal|Броски в створ)¬SH÷(\d+)¬SI÷(\d+)", stat_data, re.IGNORECASE)
-                        pm = re.search(r"SG÷(?:Penalty Minutes|Штрафное время)¬SH÷(\d+)¬SI÷(\d+)", stat_data, re.IGNORECASE)
+                        # 🔥 БРОНЕБОЙНЫЕ РЕГУЛЯРКИ (Включая PIM и Penalties) 🔥
+                        sh = re.search(r"SG÷(?:Shots on Goal|Shots|Броски в створ|Броски)¬SH÷(\d+)¬SI÷(\d+)", stat_data, re.IGNORECASE)
+                        pm = re.search(r"SG÷(?:PIM|Penalty Minutes|Штрафное время|Штраф)¬SH÷(\d+)¬SI÷(\d+)", stat_data, re.IGNORECASE)
                         
-                        if not sh: continue 
+                        if not sh: 
+                            print(f"   ⚠️ Нет данных по броскам: {match['home']} - {match['away']}")
+                            continue 
 
                         shots_home = int(sh.group(1))
                         shots_away = int(sh.group(2))
@@ -237,13 +248,16 @@ async def main():
                         if pm:
                             pm_home, pm_away = int(pm.group(1)), int(pm.group(2))
                         else:
-                            pen = re.search(r"SG÷(?:2-min Penalties|2-х минутные удаления)¬SH÷(\d+)¬SI÷(\d+)", stat_data, re.IGNORECASE)
+                            pen = re.search(r"SG÷(?:Penalties|2-min Penalties|2-х минутные удаления|Удаления)¬SH÷(\d+)¬SI÷(\d+)", stat_data, re.IGNORECASE)
                             if pen:
                                 pm_home, pm_away = int(pen.group(1)) * 2, int(pen.group(2)) * 2
 
                         total_pm = pm_home + pm_away
 
-                        # 3. ФИНАЛЬНЫЙ ТРИГГЕР: Броски и Штрафы
+                        # 🚨 РЕНТГЕН: ВЫВОД СТАТИСТИКИ ПРЯМО В КОНСОЛЬ 🚨
+                        print(f"   📊 СТАТА | {match['home']}: {shots_home} бросков, {pm_home}м штрафа | {match['away']}: {shots_away} бросков, {pm_away}м штрафа")
+
+                        # ФИНАЛЬНЫЙ ТРИГГЕР
                         if (shots_home >= STRATEGY_MIN_SHOTS or shots_away >= STRATEGY_MIN_SHOTS) and total_pm >= STRATEGY_MIN_PIM:
                             
                             msg = (
@@ -258,9 +272,11 @@ async def main():
                                 f"🔗 <a href='https://www.flashscore.com/match/{m_id}/#/match-summary/match-statistics/1'>Открыть статистику</a>"
                             )
                             
-                            print(f"   🔔 СИГНАЛ! {match['home']} vs {match['away']} | СЧЕТ: {goals_home}:{goals_away} | БРОСКИ: {shots_home}-{shots_away} | ШТРАФЫ: {total_pm}м")
+                            print(f"   ✅ СИГНАЛ ОТПРАВЛЕН В ТЕЛЕГРАМ! {match['home']} - {match['away']}")
                             await send_tg(msg)
                             notified_matches.add(m_id)
+                        else:
+                            print(f"   ❌ Не хватило цифр: {match['home']} - {match['away']}")
 
                     except Exception as e:
                         pass
