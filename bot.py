@@ -13,10 +13,10 @@ TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("CHANNEL_ID")
 WHITELIST_FILE = "whitelist.json"
 
-# 🚨 ТВОИ ТРИГГЕРЫ 🚨
-STRATEGY_MAX_GOALS = 1    
-STRATEGY_MIN_SHOTS = 13   
-STRATEGY_MIN_PIM = 4      
+# 🚨 ТВОИ ТРИГГЕРЫ (ОБЩИЕ НА ДВЕ КОМАНДЫ) 🚨
+STRATEGY_MAX_GOALS = 1    # Максимум голов (в сумме)
+STRATEGY_MIN_SHOTS = 13   # Минимум бросков (в сумме за обе команды)
+STRATEGY_MIN_PIM = 4      # Минимум штрафных минут (в сумме за обе команды)
 
 # 🏆 БАЗОВЫЙ БЕЛЫЙ СПИСОК
 HARDCODED_WHITELIST = [
@@ -74,7 +74,7 @@ API_DOMAIN = None
 API_HEADERS = None
 
 async def main():
-    print("--- 🎯 БОЕВОЙ СНАЙПЕР: РЕНТГЕН-ВЕРСИЯ ---", flush=True)
+    print("--- 🎯 БОЕВОЙ СНАЙПЕР: ИДЕАЛЬНАЯ ЛОГИКА ТОТАЛОВ ---", flush=True)
     print(f"✅ Всего лиг на радаре: {len(WHITELIST)}")
     
     global API_DOMAIN, API_HEADERS
@@ -99,7 +99,7 @@ async def main():
                         "Referer": "https://www.flashscore.com/",
                         "Cache-Control": "no-cache"
                     }
-                    print("   🔑 API-Токен захвачен. Доступ к базе открыт!", flush=True)
+                    print("   🔑 API-Токен захвачен. База открыта!", flush=True)
 
         page.on("request", token_handler)
         await page.goto("https://www.flashscore.com/hockey/", timeout=60000)
@@ -129,7 +129,6 @@ async def main():
                         let stageNode = el.querySelector('[class*="stage--block"]');
                         let stageText = stageNode ? stageNode.textContent.toLowerCase() : "";
                         
-                        // 🔥 УЧТЕНЫ ВСЕ СТАТУСЫ: BREAK, PAUSE, ПЕРЕРЫВ 🔥
                         if (stageText.includes('перерыв') || stageText.includes('break') || stageText.includes('pause') || stageText.includes('intermission')) {
                             if (!stageText.includes('2nd') && !stageText.includes('2-й') && !stageText.includes('3rd') && !stageText.includes('3-й') && !stageText.includes('2.') && !stageText.includes('3.')) {
                                 
@@ -180,7 +179,6 @@ async def main():
 
                 valid_matches = []
                 
-                # 🧠 СМАРТ-СВЕРКА (Переводчик CZECHIA и EHL)
                 for m in live_matches:
                     live_league_lower = m['league'].lower()
                     
@@ -220,7 +218,6 @@ async def main():
                     goals_away = int(match['scoreAway'])
                     total_goals = goals_home + goals_away
                     
-                    # Фильтр по голам (Тотал <= 1)
                     if total_goals > STRATEGY_MAX_GOALS:
                         print(f"   ❌ Пропуск: {match['home']} - {match['away']} | Слишком много голов: {total_goals}")
                         continue 
@@ -233,7 +230,6 @@ async def main():
                         if re.search(r"(2nd Period|2-й период|2\. Period)", stat_data, re.IGNORECASE):
                             continue
 
-                        # 🔥 БРОНЕБОЙНЫЕ РЕГУЛЯРКИ (Включая PIM и Penalties) 🔥
                         sh = re.search(r"SG÷(?:Shots on Goal|Shots|Броски в створ|Броски)¬SH÷(\d+)¬SI÷(\d+)", stat_data, re.IGNORECASE)
                         pm = re.search(r"SG÷(?:PIM|Penalty Minutes|Штрафное время|Штраф)¬SH÷(\d+)¬SI÷(\d+)", stat_data, re.IGNORECASE)
                         
@@ -241,8 +237,10 @@ async def main():
                             print(f"   ⚠️ Нет данных по броскам: {match['home']} - {match['away']}")
                             continue 
 
+                        # === ИСПРАВЛЕННАЯ МАТЕМАТИКА (ОБЩИЕ ТОТАЛЫ) ===
                         shots_home = int(sh.group(1))
                         shots_away = int(sh.group(2))
+                        total_shots = shots_home + shots_away # СУММИРУЕМ БРОСКИ!
                         
                         pm_home, pm_away = 0, 0
                         if pm:
@@ -252,13 +250,12 @@ async def main():
                             if pen:
                                 pm_home, pm_away = int(pen.group(1)) * 2, int(pen.group(2)) * 2
 
-                        total_pm = pm_home + pm_away
+                        total_pm = pm_home + pm_away # СУММИРУЕМ ШТРАФЫ!
 
-                        # 🚨 РЕНТГЕН: ВЫВОД СТАТИСТИКИ ПРЯМО В КОНСОЛЬ 🚨
-                        print(f"   📊 СТАТА | {match['home']}: {shots_home} бросков, {pm_home}м штрафа | {match['away']}: {shots_away} бросков, {pm_away}м штрафа")
+                        print(f"   📊 СТАТА | {match['home']} - {match['away']} | Общие броски: {total_shots} (нужно {STRATEGY_MIN_SHOTS}) | Общий штраф: {total_pm}м (нужно {STRATEGY_MIN_PIM}м)")
 
-                        # ФИНАЛЬНЫЙ ТРИГГЕР
-                        if (shots_home >= STRATEGY_MIN_SHOTS or shots_away >= STRATEGY_MIN_SHOTS) and total_pm >= STRATEGY_MIN_PIM:
+                        # ФИНАЛЬНЫЙ ТРИГГЕР (ПРОБИВАЕМ ПО ОБЩИМ ТОТАЛАМ)
+                        if total_shots >= STRATEGY_MIN_SHOTS and total_pm >= STRATEGY_MIN_PIM:
                             
                             msg = (
                                 f"🔥 <b>ИДЕАЛЬНАЯ ПУШКА НА 2-Й ПЕРИОД!</b> 🔥\n\n"
@@ -266,8 +263,8 @@ async def main():
                                 f"🏒 <b>Матч:</b> {match['home']} - {match['away']}\n"
                                 f"⏱ <b>Статус:</b> Перерыв после 1-го периода\n"
                                 f"📊 <b>Счет:</b> {goals_home}:{goals_away} (Тотал <= {STRATEGY_MAX_GOALS} ✅)\n\n"
-                                f"🎯 <b>Броски в створ:</b> {shots_home} - {shots_away} (Норма {STRATEGY_MIN_SHOTS}+ ✅)\n"
-                                f"⚖️ <b>Штрафное время:</b> {pm_home} - {pm_away} мин. (Норма {STRATEGY_MIN_PIM}+ ✅)\n\n"
+                                f"🎯 <b>Броски в створ:</b> {shots_home} - {shots_away} (Всего {total_shots}, Норма {STRATEGY_MIN_SHOTS}+ ✅)\n"
+                                f"⚖️ <b>Штрафное время:</b> {pm_home} - {pm_away} мин. (Всего {total_pm}м, Норма {STRATEGY_MIN_PIM}+ ✅)\n\n"
                                 f"💡 <i>Агрессия зашкаливает, шайба не летит. Ждем прорыв во 2-м периоде!</i>\n"
                                 f"🔗 <a href='https://www.flashscore.com/match/{m_id}/#/match-summary/match-statistics/1'>Открыть статистику</a>"
                             )
