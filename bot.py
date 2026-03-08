@@ -9,34 +9,45 @@ from playwright.async_api import async_playwright
 # --- КОНФИГ ---
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("CHANNEL_ID")
-
-BLACKLIST_FILE = "blacklist.json"
 WHITELIST_FILE = "whitelist.json"
 
-def load_list(filename):
-    if os.path.exists(filename):
+# 🏆 ЗОЛОТАЯ ДВАДЦАТКА (Вшита намертво, чтобы бот работал даже без файла)
+HARDCODED_WHITELIST = {
+    "AUSTRIA: ICE Hockey League",
+    "AUSTRIA: ICE Hockey League - Play Offs",
+    "CZECH REPUBLIC: Extraliga",
+    "CZECH REPUBLIC: Maxa liga - Play Offs",
+    "EUROPE: Champions League - Play Offs",
+    "FINLAND: Liiga",
+    "FINLAND: Mestis - Play Offs",
+    "FINLAND: Mestis - Relegation",
+    "GERMANY: DEL",
+    "GERMANY: DEL2",
+    "NORWAY: EHL - Play Offs",
+    "NORWAY: EHL - Relegation",
+    "POLAND: Polish Hockey League - Play Offs",
+    "RUSSIA: KHL",
+    "SWEDEN: HockeyAllsvenskan",
+    "SWEDEN: SHL",
+    "SWITZERLAND: National League",
+    "USA: AHL",
+    "USA: NHL",
+    "USA: SPHL"
+}
+
+notified_matches = set()
+
+def load_whitelist():
+    leagues = set(HARDCODED_WHITELIST)
+    if os.path.exists(WHITELIST_FILE):
         try:
-            with open(filename, "r", encoding="utf-8") as f:
-                return set(json.load(f))
+            with open(WHITELIST_FILE, "r", encoding="utf-8") as f:
+                leagues.update(json.load(f))
         except:
-            return set()
-    return set()
+            pass
+    return leagues
 
-def save_list(filename, data):
-    with open(filename, "w", encoding="utf-8") as f:
-        json.dump(list(data), f, ensure_ascii=False, indent=4)
-
-BLACKLIST = load_list(BLACKLIST_FILE)
-WHITELIST = load_list(WHITELIST_FILE)
-
-# 🛠 АМНИСТИЯ 
-amnestied = False
-for false_negative in ["USA: NHL", "USA: AHL", "SWEDEN: SHL", "CANADA: OHL", "CANADA: QMJHL", "CANADA: WHL"]:
-    if false_negative in BLACKLIST:
-        BLACKLIST.remove(false_negative)
-        amnestied = True
-if amnestied:
-    save_list(BLACKLIST_FILE, BLACKLIST)
+WHITELIST = load_whitelist()
 
 def send_tg_sync(text):
     if not TOKEN or not CHAT_ID: return
@@ -45,23 +56,20 @@ def send_tg_sync(text):
         data = json.dumps({"chat_id": CHAT_ID, "text": text, "parse_mode": "HTML"}).encode('utf-8')
         req = urllib.request.Request(url, data=data, headers={'Content-Type': 'application/json'})
         urllib.request.urlopen(req, timeout=5)
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"⚠️ Ошибка TG: {e}")
 
 async def send_tg(text):
     await asyncio.to_thread(send_tg_sync, text)
-
-async def send_tg_chunked(text):
-    for i in range(0, len(text), 4000):
-        await send_tg(text[i:i+4000])
-        await asyncio.sleep(1)
 
 API_DOMAIN = None
 API_HEADERS = None
 
 async def main():
-    print("--- 🧠 БОТ-АРХИВАРИУС V10: GOD MODE CLICKER ---", flush=True)
-    global API_DOMAIN, API_HEADERS, BLACKLIST, WHITELIST
+    print("--- 🎯 БОЕВОЙ СНАЙПЕР: АВТОРСКАЯ СТРАТЕГИЯ ЗАПУЩЕНА ---", flush=True)
+    print(f"✅ Элитных лиг на радаре: {len(WHITELIST)}")
+    
+    global API_DOMAIN, API_HEADERS
     
     async with async_playwright() as p:
         browser = await p.chromium.launch(
@@ -83,168 +91,143 @@ async def main():
                         "Referer": "https://www.flashscore.com/",
                         "Cache-Control": "no-cache"
                     }
-                    print("   🔑 API-Токен успешно захвачен!", flush=True)
+                    print("   🔑 Токен-доступ получен. Начинаю охоту!", flush=True)
 
         page.on("request", token_handler)
-
-        for day in range(8):
+        await page.goto("https://www.flashscore.com/hockey/", timeout=60000)
+        
+        cycle = 1
+        while True:
             try:
-                day_label = "СЕГОДНЯ" if day == 0 else f"{day} ДНЕЙ НАЗАД"
-                print(f"\n⏳ ПРЫЖОК ВО ВРЕМЕНИ: {day_label} (d=-{day})", flush=True)
+                print(f"\n🔄 [Скан {cycle}] Проверяю LIVE матчи...", flush=True)
                 
-                captured_text = None
-                
-                async def response_handler(response):
-                    nonlocal captured_text
-                    if captured_text: return
-                    
-                    if "flashscore.ninja" in response.url and "df_st" not in response.url:
-                        try:
-                            text = await response.text()
-                            if "ZA÷" in text and "AA÷" in text:
-                                captured_text = text
-                        except: pass
-
-                page.on("response", response_handler)
-                
-                if day == 0:
-                    # Заходим на сайт в первый раз
-                    await page.goto("https://www.flashscore.com/hockey/", timeout=60000)
-                else:
-                    # ХАКЕРСКИЙ КЛИК: Пробиваем любые блокировки и находим кнопку "Вчера"
-                    clicked = await page.evaluate('''() => {
-                        // Жестко удаляем куки-баннеры, если они есть
-                        document.querySelectorAll('#onetrust-banner-sdk, .cookie-banner').forEach(b => b.remove());
-
-                        // Ищем кнопку по всем возможным классам и атрибутам Flashscore
-                        const selectors = [
-                            '.calendar__direction--yesterday',
-                            '.calendarControls__button--prev',
-                            '[aria-label="Previous day"]',
-                            '[aria-label*="yesterday" i]',
-                            '[title="Previous day"]',
-                            '[title*="yesterday" i]'
-                        ];
-                        
-                        for (let sel of selectors) {
-                            let el = document.querySelector(sel);
-                            if (el) {
-                                el.click();
-                                return true;
-                            }
-                        }
-                        
-                        // План Б: Ищем сам блок календаря и берем в нем левую стрелку
-                        let calendar = document.querySelector('.calendar, .calendarControls');
-                        if (calendar) {
-                            let buttons = calendar.querySelectorAll('button, .calendar__direction');
-                            if (buttons.length > 0) {
-                                buttons[0].click();
-                                return true;
-                            }
-                        }
-                        return false;
-                    }''')
-                    
-                    if not clicked:
-                        print("❌ JS не смог найти кнопку календаря в DOM!", flush=True)
-
-                # Ждем перехвата базы
-                for _ in range(20):
-                    if captured_text: break
-                    await asyncio.sleep(1)
-                
-                page.remove_listener("response", response_handler)
-
-                if not captured_text:
-                    print(f"❌ База не поймана. Идем дальше...", flush=True)
+                if not API_HEADERS:
+                    await asyncio.sleep(5)
                     continue
 
-                # --- ПАРСИНГ ЛИГ ИЗ ТЕКСТА ---
-                match_dict = {} 
-                blocks = captured_text.split("ZA÷")
+                live_matches = await page.evaluate('''() => {
+                    let matches = [];
+                    let currentLeague = "Unknown";
+                    let elements = document.querySelectorAll('.event__header, .event__match--live');
+                    
+                    for (let el of elements) {
+                        if (el.classList.contains('event__header')) {
+                            let typeNode = el.querySelector('.event__title--type');
+                            let nameNode = el.querySelector('.event__title--name');
+                            if (typeNode && nameNode) {
+                                currentLeague = typeNode.innerText.trim() + ": " + nameNode.innerText.trim();
+                            }
+                        } else if (el.classList.contains('event__match--live')) {
+                            let stageNode = el.querySelector('.event__stage--block');
+                            let stageText = stageNode ? stageNode.innerText.toLowerCase() : "";
+                            
+                            // Нам нужны матчи, которые на ПЕРЕРЫВЕ или в конце 1-го периода
+                            if (stageText.includes('1st') || stageText.includes('1-й') || stageText.includes('перерыв') || stageText.includes('break')) {
+                                let matchId = el.id.split('_').pop();
+                                let home = el.querySelector('.event__participant--home').innerText.trim();
+                                let away = el.querySelector('.event__participant--away').innerText.trim();
+                                let scoreHome = el.querySelector('.event__score--home').innerText.trim();
+                                let scoreAway = el.querySelector('.event__score--away').innerText.trim();
+                                let time = stageText.replace(/\\n/g, ' ').trim();
+                                
+                                matches.push({
+                                    id: matchId, 
+                                    league: currentLeague,
+                                    home: home,
+                                    away: away,
+                                    scoreHome: scoreHome,
+                                    scoreAway: scoreAway,
+                                    time: time
+                                });
+                            }
+                        }
+                    }
+                    return matches;
+                }''')
+
+                # Фильтруем только те матчи, которые есть в нашем Золотом Списке
+                valid_matches = [m for m in live_matches if m['league'] in WHITELIST]
                 
-                for block in blocks[1:]:
-                    league_name = block.split("¬")[0].strip()
-                    matches = block.split("AA÷")[1:]
-                    m_id = None
+                for match in valid_matches:
+                    m_id = match['id']
+                    if m_id in notified_matches:
+                        continue
+
+                    # 1. ПРОВЕРКА СТАТУСА: Нам нужен именно первый ПЕРЕРЫВ
+                    if 'перерыв' not in match['time'] and 'break' not in match['time']:
+                        continue 
+
+                    # 2. ПРОВЕРКА ГОЛОВ: Тотал не больше 1 шайбы
+                    goals_home = int(match['scoreHome']) if match['scoreHome'].isdigit() else 0
+                    goals_away = int(match['scoreAway']) if match['scoreAway'].isdigit() else 0
+                    total_goals = goals_home + goals_away
                     
-                    for m in matches:
-                        if any(f"¬AC÷{s}¬" in m for s in [3, 8, 9, 10, 11]):
-                            m_id = m.split("¬")[0]
-                            if len(m_id) == 8:
-                                break
-                    
-                    if m_id and len(m_id) == 8:
-                        match_dict[league_name] = m_id
+                    if total_goals > 1:
+                        continue 
 
-                print(f"✅ Найдено сыгранных лиг: {len(match_dict)}. Сканирую статистику...", flush=True)
-
-                if not API_DOMAIN or not API_HEADERS:
-                    print("⚠️ Нет API ключа, жду...", flush=True)
-                    await asyncio.sleep(3)
-
-                # --- РЕНТГЕН БРОСКОВ ЧЕРЕЗ API ---
-                for league_name, m_id in match_dict.items():
+                    stat_url = f"{API_DOMAIN}/2/x/feed/df_st_1_{m_id}"
                     try:
-                        if league_name in BLACKLIST or league_name in WHITELIST:
-                            continue
-
-                        print(f"   🔍 🏆 {league_name}", flush=True)
-
-                        stat_url = f"{API_DOMAIN}/2/x/feed/df_st_1_{m_id}"
                         stat_resp = await context.request.get(stat_url, headers=API_HEADERS)
                         stat_data = await stat_resp.text()
 
-                        if not stat_data or "SG÷" not in stat_data:
-                            print(f"      🗑 Пусто -> ЧС", flush=True)
-                            BLACKLIST.add(league_name)
-                            save_list(BLACKLIST_FILE, BLACKLIST)
+                        # ДОП. ЗАЩИТА: Убеждаемся, что вкладки 2-го периода еще нет
+                        if re.search(r"(2nd Period|2-й период|2\. Period)", stat_data, re.IGNORECASE):
                             continue
 
-                        p1_data = stat_data
-                        if "~SE÷" in stat_data:
-                            for tab in stat_data.split("~SE÷"):
-                                if re.search(r"^(1st Period|1-й период|1\. Period|Period 1)", tab, re.IGNORECASE):
-                                    p1_data = tab
-                                    break
-
-                        sh = re.search(r"SG÷(?:Shots on Goal|Броски в створ)¬SH÷(\d+)¬SI÷(\d+)", p1_data, re.IGNORECASE)
-
-                        if sh:
-                            print(f"      ✅ Броски есть! -> БЕЛЫЙ СПИСОК", flush=True)
-                            WHITELIST.add(league_name)
-                            save_list(WHITELIST_FILE, WHITELIST)
-                        else:
-                            print(f"      🗑 Нет бросков -> ЧС", flush=True)
-                            BLACKLIST.add(league_name)
-                            save_list(BLACKLIST_FILE, BLACKLIST)
-                            
-                    except Exception as e:
-                        pass
+                        # 3. ИЗВЛЕКАЕМ БРОСКИ И ШТРАФЫ
+                        sh = re.search(r"SG÷(?:Shots on Goal|Броски в створ)¬SH÷(\d+)¬SI÷(\d+)", stat_data, re.IGNORECASE)
+                        pm = re.search(r"SG÷(?:Penalty Minutes|Штрафное время)¬SH÷(\d+)¬SI÷(\d+)", stat_data, re.IGNORECASE)
                         
-                    await asyncio.sleep(0.3) 
+                        if not sh: continue 
+
+                        shots_home = int(sh.group(1))
+                        shots_away = int(sh.group(2))
+                        
+                        pm_home, pm_away = 0, 0
+                        if pm:
+                            pm_home, pm_away = int(pm.group(1)), int(pm.group(2))
+                        else:
+                            pen = re.search(r"SG÷(?:2-min Penalties|2-х минутные удаления)¬SH÷(\d+)¬SI÷(\d+)", stat_data, re.IGNORECASE)
+                            if pen:
+                                pm_home, pm_away = int(pen.group(1)) * 2, int(pen.group(2)) * 2
+
+                        total_pm = pm_home + pm_away
+
+                        # 🚨 АВТОРСКИЙ ТРИГГЕР 🚨
+                        # - Бросков >= 13
+                        # - Штрафов >= 4 минут
+                        if (shots_home >= 13 or shots_away >= 13) and total_pm >= 4:
+                            
+                            msg = (
+                                f"🔥 <b>ИДЕАЛЬНАЯ ПУШКА НА 2-Й ПЕРИОД!</b> 🔥\n\n"
+                                f"🏆 <b>Лига:</b> {match['league']}\n"
+                                f"🏒 <b>Матч:</b> {match['home']} - {match['away']}\n"
+                                f"⏱ <b>Статус:</b> Завершен 1-й период\n"
+                                f"📊 <b>Счет:</b> {goals_home}:{goals_away} (Тотал <= 1 ✅)\n\n"
+                                f"🎯 <b>Броски в створ:</b> {shots_home} - {shots_away} (Норма 13+ ✅)\n"
+                                f"⚖️ <b>Штрафное время:</b> {pm_home} - {pm_away} мин. (Норма 4+ ✅)\n\n"
+                                f"💡 <i>Агрессия зашкаливает, шайба не летит. Ждем прорыв во 2-м периоде!</i>\n"
+                                f"🔗 <a href='https://www.flashscore.com/match/{m_id}/#/match-summary/match-statistics/1'>Открыть статистику</a>"
+                            )
+                            
+                            print(f"   🔔 СИГНАЛ! {match['home']} vs {match['away']} | СЧЕТ: {goals_home}:{goals_away} | БРОСКИ: {shots_home}-{shots_away} | ШТРАФЫ: {total_pm}м")
+                            await send_tg(msg)
+                            notified_matches.add(m_id)
+
+                    except Exception as e:
+                        print(f"      ⚠️ Ошибка проверки API матча: {e}", flush=True)
+
+                    await asyncio.sleep(0.5)
 
             except Exception as e:
-                print(f"🚨 ОШИБКА НА ДНЕ {day}: {e}", flush=True)
+                print(f"🚨 Ошибка в цикле сканирования: {e}", flush=True)
                 traceback.print_exc()
-
-        print(f"\n🏁 ПУТЕШЕСТВИЕ ВО ВРЕМЕНИ ЗАВЕРШЕНО!")
-        print(f"📊 Итоговые знания: {len(WHITELIST)} хороших лиг, {len(BLACKLIST)} мусорных.")
-        print("📨 Отправляю отчет в Telegram...", flush=True)
-
-        if WHITELIST:
-            sorted_whitelist = sorted(list(WHITELIST))
-            tg_msg = f"🏆 <b>БЕЛЫЙ СПИСОК ЛИГ ({len(WHITELIST)} шт.)</b>\n<i>Собрано за 7 дней:</i>\n\n"
-            for league in sorted_whitelist:
-                tg_msg += f"✅ {league}\n"
             
-            await send_tg_chunked(tg_msg)
-            print("✅ Отчет успешно отправлен в TG!", flush=True)
-        else:
-            await send_tg("🤷‍♂️ За 7 дней не найдено ни одной хорошей лиги.")
-
-        await browser.close()
+            cycle += 1
+            await asyncio.sleep(60)
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        print("\n🛑 Снайпер остановлен вручную.")
