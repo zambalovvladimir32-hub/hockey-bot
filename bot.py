@@ -11,7 +11,7 @@ TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("CHANNEL_ID")
 WHITELIST_FILE = "whitelist.json"
 
-# 🏆 ЗОЛОТАЯ ДВАДЦАТКА (Вшита намертво)
+# 🏆 ЗОЛОТАЯ ДВАДЦАТКА
 HARDCODED_WHITELIST = {
     "AUSTRIA: ICE Hockey League",
     "AUSTRIA: ICE Hockey League - Play Offs",
@@ -66,7 +66,7 @@ API_DOMAIN = None
 API_HEADERS = None
 
 async def main():
-    print("--- 🎯 БОЕВОЙ СНАЙПЕР V4: ГИБКИЙ ЗАХВАТ ЗАПУЩЕН ---", flush=True)
+    print("--- 🎯 БОЕВОЙ СНАЙПЕР V5: ПОЛНЫЙ ЗАХВАТ ---", flush=True)
     print(f"✅ Базовых лиг на радаре: {len(WHITELIST)}")
     
     global API_DOMAIN, API_HEADERS
@@ -145,12 +145,15 @@ async def main():
                     return matches;
                 }''')
 
-                # 🧠 УМНЫЙ ФИЛЬТР ЛИГ: Игнорируем приписки про Play Offs
+                # 🧠 УМНЫЙ ФИЛЬТР ЛИГ (РЕГИСТРОНЕЗАВИСИМЫЙ И БЕЗ PLAY-OFFS)
                 valid_matches = []
                 for m in live_matches:
+                    live_league_lower = m['league'].lower()
                     for wl_league in WHITELIST:
-                        base_league = wl_league.split(" - ")[0].strip()
-                        if base_league in m['league']:
+                        # Отрезаем приписки про плей-офф и переводим в нижний регистр
+                        base_league = wl_league.split(" - ")[0].strip().lower()
+                        
+                        if base_league in live_league_lower:
                             valid_matches.append(m)
                             break # Нашли совпадение - забираем матч!
                 
@@ -203,8 +206,8 @@ async def main():
                         total_pm = pm_home + pm_away
 
                         # 🚨 АВТОРСКИЙ ТРИГГЕР 🚨
-                        # - Бросков >= 13
-                        # - Штрафов >= 4 минут
+                        # - Бросков >= 13 (у любой из команд)
+                        # - Штрафов >= 4 минут (в сумме)
                         if (shots_home >= 13 or shots_away >= 13) and total_pm >= 4:
                             
                             msg = (
