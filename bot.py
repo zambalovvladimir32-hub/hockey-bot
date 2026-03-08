@@ -29,7 +29,7 @@ def save_list(filename, data):
 BLACKLIST = load_list(BLACKLIST_FILE)
 WHITELIST = load_list(WHITELIST_FILE)
 
-# 🛠 АМНИСТИЯ (на всякий случай оставляем)
+# 🛠 АМНИСТИЯ 
 amnestied = False
 for false_negative in ["USA: NHL", "USA: AHL", "SWEDEN: SHL", "CANADA: OHL", "CANADA: QMJHL", "CANADA: WHL"]:
     if false_negative in BLACKLIST:
@@ -60,7 +60,7 @@ API_DOMAIN = None
 API_HEADERS = None
 
 async def main():
-    print("--- 🧠 БОТ-АРХИВАРИУС V9: ЭМУЛЯТОР ЧЕЛОВЕКА ---", flush=True)
+    print("--- 🧠 БОТ-АРХИВАРИУС V10: GOD MODE CLICKER ---", flush=True)
     global API_DOMAIN, API_HEADERS, BLACKLIST, WHITELIST
     
     async with async_playwright() as p:
@@ -101,33 +101,56 @@ async def main():
                     if "flashscore.ninja" in response.url and "df_st" not in response.url:
                         try:
                             text = await response.text()
-                            # Гарантия того, что это база лиг и матчей
                             if "ZA÷" in text and "AA÷" in text:
                                 captured_text = text
                         except: pass
 
-                # Вешаем перехватчик ДО действия
                 page.on("response", response_handler)
                 
                 if day == 0:
                     # Заходим на сайт в первый раз
                     await page.goto("https://www.flashscore.com/hockey/", timeout=60000)
-                    
-                    # Закрываем баннер с куки, если он есть, чтобы не мешал кликам
-                    try:
-                        await page.click('#onetrust-accept-btn-handler', timeout=3000)
-                        await asyncio.sleep(1)
-                    except: pass
                 else:
-                    # Для прошлых дней просто жмем стрелку "Вчера" в календаре!
-                    try:
-                        await page.evaluate("window.scrollTo(0, 0)") # Поднимаемся наверх
-                        await page.click('.calendar__direction--yesterday', timeout=5000)
-                    except Exception as e:
-                        print(f"❌ Не удалось нажать кнопку календаря: {e}", flush=True)
+                    # ХАКЕРСКИЙ КЛИК: Пробиваем любые блокировки и находим кнопку "Вчера"
+                    clicked = await page.evaluate('''() => {
+                        // Жестко удаляем куки-баннеры, если они есть
+                        document.querySelectorAll('#onetrust-banner-sdk, .cookie-banner').forEach(b => b.remove());
+
+                        // Ищем кнопку по всем возможным классам и атрибутам Flashscore
+                        const selectors = [
+                            '.calendar__direction--yesterday',
+                            '.calendarControls__button--prev',
+                            '[aria-label="Previous day"]',
+                            '[aria-label*="yesterday" i]',
+                            '[title="Previous day"]',
+                            '[title*="yesterday" i]'
+                        ];
+                        
+                        for (let sel of selectors) {
+                            let el = document.querySelector(sel);
+                            if (el) {
+                                el.click();
+                                return true;
+                            }
+                        }
+                        
+                        // План Б: Ищем сам блок календаря и берем в нем левую стрелку
+                        let calendar = document.querySelector('.calendar, .calendarControls');
+                        if (calendar) {
+                            let buttons = calendar.querySelectorAll('button, .calendar__direction');
+                            if (buttons.length > 0) {
+                                buttons[0].click();
+                                return true;
+                            }
+                        }
+                        return false;
+                    }''')
+                    
+                    if not clicked:
+                        print("❌ JS не смог найти кнопку календаря в DOM!", flush=True)
 
                 # Ждем перехвата базы
-                for _ in range(15):
+                for _ in range(20):
                     if captured_text: break
                     await asyncio.sleep(1)
                 
@@ -147,7 +170,6 @@ async def main():
                     m_id = None
                     
                     for m in matches:
-                        # Только сыгранные матчи (статусы 3, 8, 9, 10, 11)
                         if any(f"¬AC÷{s}¬" in m for s in [3, 8, 9, 10, 11]):
                             m_id = m.split("¬")[0]
                             if len(m_id) == 8:
