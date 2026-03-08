@@ -10,7 +10,6 @@ from playwright.async_api import async_playwright
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("CHANNEL_ID")
 WHITELIST_FILE = "whitelist.json"
-CACHE_FILE = "league_cache.json" # Файл для вечной памяти лиг
 
 # 🏆 ЗОЛОТАЯ ДВАДЦАТКА
 HARDCODED_WHITELIST = {
@@ -38,7 +37,6 @@ HARDCODED_WHITELIST = {
 
 notified_matches = set()
 
-# --- СИСТЕМА ПАМЯТИ ---
 def load_whitelist():
     leagues = set(HARDCODED_WHITELIST)
     if os.path.exists(WHITELIST_FILE):
@@ -48,29 +46,13 @@ def load_whitelist():
         except: pass
     return leagues
 
-def load_cache():
-    if os.path.exists(CACHE_FILE):
-        try:
-            with open(CACHE_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except: pass
-    return {}
-
-def save_cache(cache_data):
-    try:
-        with open(CACHE_FILE, "w", encoding="utf-8") as f:
-            json.dump(cache_data, f, ensure_ascii=False, indent=4)
-    except: pass
-
 WHITELIST = load_whitelist()
-league_cache = load_cache()
 
-# --- TELEGRAM ---
 def send_tg_sync(text):
     if not TOKEN or not CHAT_ID: return
     try:
         url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
-        data = json.dumps({"chat_id": CHAT_ID, "text": text, "parse_mode": "HTML", "disable_web_page_preview": True}).encode('utf-8')
+        data = json.dumps({"chat_id": CHAT_ID, "text": text, "parse_mode": "HTML"}).encode('utf-8')
         req = urllib.request.Request(url, data=data, headers={'Content-Type': 'application/json'})
         urllib.request.urlopen(req, timeout=5)
     except Exception as e:
@@ -83,28 +65,17 @@ API_DOMAIN = None
 API_HEADERS = None
 
 async def main():
-    print("--- 🛡 БОЕВОЙ СНАЙПЕР V11: ТИТАН (АБСОЛЮТНАЯ БРОНЯ) ---", flush=True)
-    print(f"✅ Базовых лиг на радаре: {len(WHITELIST)}")
-    print(f"🧠 Восстановлено лиг из кэша: {len(league_cache)}")
+    print("--- 🛡 БОЕВОЙ СНАЙПЕР V12: ДОМ-ПОТРОШИТЕЛЬ ---", flush=True)
+    print(f"✅ Элитных лиг на радаре: {len(WHITELIST)}")
     
     global API_DOMAIN, API_HEADERS
     
     async with async_playwright() as p:
-        # Тяжелые настройки анти-детекта
         browser = await p.chromium.launch(
             headless=True, 
-            args=[
-                '--no-sandbox', 
-                '--disable-dev-shm-usage', 
-                '--disable-blink-features=AutomationControlled',
-                '--disable-infobars',
-                '--window-size=1920,1080'
-            ]
+            args=['--no-sandbox', '--disable-dev-shm-usage', '--disable-blink-features=AutomationControlled']
         )
-        context = await browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            viewport={'width': 1920, 'height': 1080}
-        )
+        context = await browser.new_context(user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
         page = await context.new_page()
 
         async def token_handler(request):
@@ -119,7 +90,7 @@ async def main():
                         "Referer": "https://www.flashscore.com/",
                         "Cache-Control": "no-cache"
                     }
-                    print("   🔑 API Ключ вырван из сервера!", flush=True)
+                    print("   🔑 Токен-доступ получен. Начинаю охоту!", flush=True)
 
         page.on("request", token_handler)
         await page.goto("https://www.flashscore.com/hockey/", timeout=60000)
@@ -127,110 +98,109 @@ async def main():
         cycle = 1
         while True:
             try:
-                print(f"\n🔄 [Скан {cycle}] Радар запущен...", flush=True)
+                print(f"\n🔄 [Скан {cycle}] Проверяю LIVE матчи...", flush=True)
                 
                 if not API_HEADERS:
                     await asyncio.sleep(5)
                     continue
 
-                # ==========================================
-                # ЭТАП 1: ЛЕГКИЙ ПАРСИНГ ЭКРАНА
-                # ==========================================
+                # --- 1. АВТО-СКРОЛЛЕР (Заставляем сайт загрузить все лиги) ---
+                await page.evaluate('''async () => {
+                    let lastScrollTop = 0;
+                    while (true) {
+                        window.scrollBy(0, 1500);
+                        await new Promise(resolve => setTimeout(resolve, 200));
+                        if (document.documentElement.scrollTop === lastScrollTop) break;
+                        lastScrollTop = document.documentElement.scrollTop;
+                    }
+                    window.scrollTo(0, 0); // Возвращаемся наверх
+                }''')
+                await asyncio.sleep(1)
+
+                # --- 2. ЖЕСТКОЕ ИЗВЛЕЧЕНИЕ ТЕКСТА (textContent) ---
                 live_matches = await page.evaluate('''() => {
                     let matches = [];
-                    let elements = document.querySelectorAll('.event__match--live');
+                    let currentLeague = "Unknown";
+                    
+                    // Берем ВСЕ заголовки и матчи подряд
+                    let elements = document.querySelectorAll('.event__header, .event__match');
                     
                     for (let el of elements) {
-                        let stageNode = el.querySelector('.event__stage--block');
-                        let stageText = stageNode ? stageNode.innerText.toLowerCase() : "";
-                        
-                        if (stageText.includes('1st') || stageText.includes('1-й') || stageText.includes('перерыв') || stageText.includes('break')) {
-                            let matchId = el.id.split('_').pop();
-                            let home = el.querySelector('.event__participant--home')?.innerText.trim() || "Team1";
-                            let away = el.querySelector('.event__participant--away')?.innerText.trim() || "Team2";
-                            let scoreHome = el.querySelector('.event__score--home')?.innerText.trim() || "0";
-                            let scoreAway = el.querySelector('.event__score--away')?.innerText.trim() || "0";
-                            let time = stageText.replace(/\\n/g, ' ').trim();
+                        if (el.classList.contains('event__header')) {
+                            // ИСПОЛЬЗУЕМ textContent - он достает текст даже из скрытых элементов в headless режиме!
+                            let countryNode = el.querySelector('.event__title--type');
+                            let leagueNode = el.querySelector('.event__title--name');
                             
-                            matches.push({
-                                id: matchId, 
-                                home: home,
-                                away: away,
-                                scoreHome: scoreHome,
-                                scoreAway: scoreAway,
-                                time: time
-                            });
+                            let country = countryNode ? countryNode.textContent.trim() : "";
+                            let league = leagueNode ? leagueNode.textContent.trim() : "";
+                            
+                            if (country && league) {
+                                currentLeague = country + ": " + league;
+                            }
+                        } 
+                        else if (el.classList.contains('event__match--live')) {
+                            let stageNode = el.querySelector('.event__stage--block');
+                            let stageText = stageNode ? stageNode.textContent.toLowerCase() : "";
+                            
+                            // Фильтр: 1-й период или перерыв
+                            if (stageText.includes('1st') || stageText.includes('1-й') || stageText.includes('перерыв') || stageText.includes('break') || stageText.includes('period 1')) {
+                                let matchId = el.id.split('_').pop();
+                                
+                                // textContent.replace - очищает от мусора
+                                let home = el.querySelector('.event__participant--home')?.textContent.trim() || "Team 1";
+                                let away = el.querySelector('.event__participant--away')?.textContent.trim() || "Team 2";
+                                
+                                // Ищем первую попавшуюся цифру в счете, чтобы избежать проблем с буллитами "(1) 3"
+                                let scoreHomeMatch = (el.querySelector('.event__score--home')?.textContent || "").match(/\\d+/);
+                                let scoreAwayMatch = (el.querySelector('.event__score--away')?.textContent || "").match(/\\d+/);
+                                
+                                let scoreHome = scoreHomeMatch ? scoreHomeMatch[0] : "0";
+                                let scoreAway = scoreAwayMatch ? scoreAwayMatch[0] : "0";
+                                
+                                let time = stageText.replace(/\\n/g, ' ').trim();
+                                
+                                matches.push({
+                                    id: matchId, 
+                                    league: currentLeague,
+                                    home: home,
+                                    away: away,
+                                    scoreHome: scoreHome,
+                                    scoreAway: scoreAway,
+                                    time: time
+                                });
+                            }
                         }
                     }
                     return matches;
                 }''')
 
                 valid_matches = []
-                cache_updated = False
-
-                # ==========================================
-                # ЭТАП 2: ЖЕСТКАЯ ИДЕНТИФИКАЦИЯ ЛИГ (БЕЗ ОСЕЧЕК)
-                # ==========================================
+                
+                # --- 3. УМНАЯ СВЕРКА ЛИГ ---
                 for m in live_matches:
-                    m_id = m['id']
-                    
-                    if m_id not in league_cache:
-                        match_page = None
-                        try:
-                            # Создаем шпионскую вкладку
-                            match_page = await context.new_page()
-                            # Идем прямо на страницу матча
-                            await match_page.goto(f"https://www.flashscore.com/match/{m_id}/#/match-summary", wait_until="domcontentloaded", timeout=15000)
-                            
-                            # ЖДЕМ ИМЕННО ЗАГОЛОВОК ЛИГИ В HTML
-                            await match_page.wait_for_selector('.tournamentHeader__country', timeout=8000)
-                            
-                            # Вырываем текст лиги напрямую из элемента (например: RUSSIA: KHL)
-                            league_text = await match_page.evaluate('() => document.querySelector(".tournamentHeader__country").innerText')
-                            
-                            # Очищаем переносы строк и лишние пробелы
-                            clean_league = re.sub(r'\s+', ' ', league_text.replace('\n', ': ')).strip()
-                            league_cache[m_id] = clean_league
-                            cache_updated = True
-                            
-                        except Exception as e:
-                            league_cache[m_id] = "Unknown Error"
-                        finally:
-                            # ЖЕЛЕЗНО ЗАКРЫВАЕМ ВКЛАДКУ, ЧТОБЫ НЕ УБИТЬ СЕРВЕР
-                            if match_page:
-                                await match_page.close()
-
-                    m['league'] = league_cache.get(m_id, "Unknown")
                     print(f"   [РАДАР] {m['home']} - {m['away']} | 🏆 {m['league']}")
-
-                    # Умная сверка с Золотой Базой
+                    
                     live_league_lower = m['league'].lower()
+                    
                     for wl_league in WHITELIST:
                         base_league = wl_league.split(" - ")[0].strip().lower()
                         if base_league in live_league_lower:
                             valid_matches.append(m)
                             break 
                 
-                # Сохраняем память на диск, если нашли новые лиги
-                if cache_updated:
-                    save_cache(league_cache)
+                print(f"👀 Итог сканирования: Найдено в 1-м периоде {len(live_matches)} | Подходят под Белый Список: {len(valid_matches)}")
 
-                print(f"👀 Итог сканирования: Найдено {len(live_matches)} | Берем в работу: {len(valid_matches)}")
-
-                # ==========================================
-                # ЭТАП 3: РЕНТГЕН СТАТИСТИКИ 
-                # ==========================================
+                # --- 4. РЕНТГЕН СТАТИСТИКИ (АВТОРСКАЯ СТРАТЕГИЯ) ---
                 for match in valid_matches:
                     m_id = match['id']
                     if m_id in notified_matches:
                         continue
 
-                    # Нам нужен только перерыв
                     if 'перерыв' not in match['time'] and 'break' not in match['time']:
                         continue 
 
-                    goals_home = int(match['scoreHome']) if match['scoreHome'].isdigit() else 0
-                    goals_away = int(match['scoreAway']) if match['scoreAway'].isdigit() else 0
+                    goals_home = int(match['scoreHome'])
+                    goals_away = int(match['scoreAway'])
                     total_goals = goals_home + goals_away
                     
                     if total_goals > 1:
@@ -262,7 +232,7 @@ async def main():
 
                         total_pm = pm_home + pm_away
 
-                        # 🚨 ТРИГГЕР СТРАТЕГИИ: 13+ бросков и 4+ мин штрафа
+                        # 🚨 ТРИГГЕР: >=13 бросков и >= 4 мин штрафа
                         if (shots_home >= 13 or shots_away >= 13) and total_pm >= 4:
                             
                             msg = (
@@ -282,12 +252,13 @@ async def main():
                             notified_matches.add(m_id)
 
                     except Exception as e:
-                        pass
+                        print(f"      ⚠️ Ошибка API: {e}", flush=True)
 
                     await asyncio.sleep(0.5)
 
             except Exception as e:
                 print(f"🚨 Системная Ошибка: {e}", flush=True)
+                traceback.print_exc()
             
             cycle += 1
             await asyncio.sleep(60)
