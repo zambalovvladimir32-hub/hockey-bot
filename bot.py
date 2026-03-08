@@ -14,9 +14,9 @@ CHAT_ID = os.getenv("CHANNEL_ID")
 WHITELIST_FILE = "whitelist.json"
 
 # 🚨 ТВОИ ТРИГГЕРЫ (ОБЩИЕ НА ДВЕ КОМАНДЫ) 🚨
-STRATEGY_MAX_GOALS = 1    # Максимум голов (в сумме)
-STRATEGY_MIN_SHOTS = 13   # Минимум бросков (в сумме за обе команды)
-STRATEGY_MIN_PIM = 4      # Минимум штрафных минут (в сумме за обе команды)
+STRATEGY_MAX_GOALS = 1    
+STRATEGY_MIN_SHOTS = 13   
+STRATEGY_MIN_PIM = 4      
 
 # 🏆 БАЗОВЫЙ БЕЛЫЙ СПИСОК
 HARDCODED_WHITELIST = [
@@ -57,11 +57,15 @@ def load_whitelist():
 
 WHITELIST = load_whitelist()
 
+# Экранирование спецсимволов для HTML Телеграма
+def escape_html(text):
+    return str(text).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
 def send_tg_sync(text):
     if not TOKEN or not CHAT_ID: return
     try:
         url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
-        data = json.dumps({"chat_id": CHAT_ID, "text": text, "parse_mode": "HTML"}).encode('utf-8')
+        data = json.dumps({"chat_id": CHAT_ID, "text": text, "parse_mode": "HTML", "disable_web_page_preview": True}).encode('utf-8')
         req = urllib.request.Request(url, data=data, headers={'Content-Type': 'application/json'})
         urllib.request.urlopen(req, timeout=5)
     except Exception as e:
@@ -237,10 +241,9 @@ async def main():
                             print(f"   ⚠️ Нет данных по броскам: {match['home']} - {match['away']}")
                             continue 
 
-                        # === ИСПРАВЛЕННАЯ МАТЕМАТИКА (ОБЩИЕ ТОТАЛЫ) ===
                         shots_home = int(sh.group(1))
                         shots_away = int(sh.group(2))
-                        total_shots = shots_home + shots_away # СУММИРУЕМ БРОСКИ!
+                        total_shots = shots_home + shots_away
                         
                         pm_home, pm_away = 0, 0
                         if pm:
@@ -250,19 +253,23 @@ async def main():
                             if pen:
                                 pm_home, pm_away = int(pen.group(1)) * 2, int(pen.group(2)) * 2
 
-                        total_pm = pm_home + pm_away # СУММИРУЕМ ШТРАФЫ!
+                        total_pm = pm_home + pm_away
 
                         print(f"   📊 СТАТА | {match['home']} - {match['away']} | Общие броски: {total_shots} (нужно {STRATEGY_MIN_SHOTS}) | Общий штраф: {total_pm}м (нужно {STRATEGY_MIN_PIM}м)")
 
-                        # ФИНАЛЬНЫЙ ТРИГГЕР (ПРОБИВАЕМ ПО ОБЩИМ ТОТАЛАМ)
                         if total_shots >= STRATEGY_MIN_SHOTS and total_pm >= STRATEGY_MIN_PIM:
                             
+                            # 🔥 ИСПРАВЛЕННЫЙ HTML-ТЕКСТ (ЗАМЕНЕН ЗНАК < НА ≤) 🔥
+                            safe_league = escape_html(match['beautiful_league'])
+                            safe_home = escape_html(match['home'])
+                            safe_away = escape_html(match['away'])
+
                             msg = (
                                 f"🔥 <b>ИДЕАЛЬНАЯ ПУШКА НА 2-Й ПЕРИОД!</b> 🔥\n\n"
-                                f"🏆 <b>Лига:</b> {match['beautiful_league']}\n"
-                                f"🏒 <b>Матч:</b> {match['home']} - {match['away']}\n"
+                                f"🏆 <b>Лига:</b> {safe_league}\n"
+                                f"🏒 <b>Матч:</b> {safe_home} - {safe_away}\n"
                                 f"⏱ <b>Статус:</b> Перерыв после 1-го периода\n"
-                                f"📊 <b>Счет:</b> {goals_home}:{goals_away} (Тотал <= {STRATEGY_MAX_GOALS} ✅)\n\n"
+                                f"📊 <b>Счет:</b> {goals_home}:{goals_away} (Тотал ≤ {STRATEGY_MAX_GOALS} ✅)\n\n"
                                 f"🎯 <b>Броски в створ:</b> {shots_home} - {shots_away} (Всего {total_shots}, Норма {STRATEGY_MIN_SHOTS}+ ✅)\n"
                                 f"⚖️ <b>Штрафное время:</b> {pm_home} - {pm_away} мин. (Всего {total_pm}м, Норма {STRATEGY_MIN_PIM}+ ✅)\n\n"
                                 f"💡 <i>Агрессия зашкаливает, шайба не летит. Ждем прорыв во 2-м периоде!</i>\n"
