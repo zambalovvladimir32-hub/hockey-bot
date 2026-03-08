@@ -11,7 +11,7 @@ TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("CHANNEL_ID")
 WHITELIST_FILE = "whitelist.json"
 
-# 🏆 ЗОЛОТАЯ ДВАДЦАТКА (Вшита намертво, чтобы бот работал даже без файла)
+# 🏆 ЗОЛОТАЯ ДВАДЦАТКА (Вшита намертво)
 HARDCODED_WHITELIST = {
     "AUSTRIA: ICE Hockey League",
     "AUSTRIA: ICE Hockey League - Play Offs",
@@ -66,8 +66,8 @@ API_DOMAIN = None
 API_HEADERS = None
 
 async def main():
-    print("--- 🎯 БОЕВОЙ СНАЙПЕР: АВТОРСКАЯ СТРАТЕГИЯ ЗАПУЩЕНА ---", flush=True)
-    print(f"✅ Элитных лиг на радаре: {len(WHITELIST)}")
+    print("--- 🎯 БОЕВОЙ СНАЙПЕР V4: ГИБКИЙ ЗАХВАТ ЗАПУЩЕН ---", flush=True)
+    print(f"✅ Базовых лиг на радаре: {len(WHITELIST)}")
     
     global API_DOMAIN, API_HEADERS
     
@@ -145,9 +145,17 @@ async def main():
                     return matches;
                 }''')
 
-                # Фильтруем только те матчи, которые есть в нашем Золотом Списке
-                valid_matches = [m for m in live_matches if m['league'] in WHITELIST]
+                # 🧠 УМНЫЙ ФИЛЬТР ЛИГ: Игнорируем приписки про Play Offs
+                valid_matches = []
+                for m in live_matches:
+                    for wl_league in WHITELIST:
+                        base_league = wl_league.split(" - ")[0].strip()
+                        if base_league in m['league']:
+                            valid_matches.append(m)
+                            break # Нашли совпадение - забираем матч!
                 
+                print(f"👀 Найдено матчей в 1-м периоде/перерыве: {len(live_matches)} (В базе: {len(valid_matches)})")
+
                 for match in valid_matches:
                     m_id = match['id']
                     if m_id in notified_matches:
@@ -187,6 +195,7 @@ async def main():
                         if pm:
                             pm_home, pm_away = int(pm.group(1)), int(pm.group(2))
                         else:
+                            # Резервный поиск по удалениям (умножаем на 2 минуты)
                             pen = re.search(r"SG÷(?:2-min Penalties|2-х минутные удаления)¬SH÷(\d+)¬SI÷(\d+)", stat_data, re.IGNORECASE)
                             if pen:
                                 pm_home, pm_away = int(pen.group(1)) * 2, int(pen.group(2)) * 2
