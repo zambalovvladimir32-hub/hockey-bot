@@ -78,7 +78,7 @@ API_DOMAIN = None
 API_HEADERS = None
 
 async def main():
-    print("--- 🎯 БОЕВОЙ СНАЙПЕР: МОДУЛЬ АВТО-ДОЖИМА АКТИВИРОВАН ---", flush=True)
+    print("--- 🎯 БОЕВОЙ СНАЙПЕР: СТРОГИЙ КОНТРОЛЬ 2-ГО ПЕРИОДА ---", flush=True)
     print(f"✅ Всего лиг на радаре: {len(WHITELIST)}")
     
     global API_DOMAIN, API_HEADERS
@@ -125,7 +125,6 @@ async def main():
                     await new Promise(r => setTimeout(r, 500));
                 }''')
 
-                # ТЕПЕРЬ СОБИРАЕМ ВООБЩЕ ВСЕ МАТЧИ В ЛАЙВЕ
                 live_matches = await page.evaluate('''() => {
                     let matches = [];
                     let elements = document.querySelectorAll('[id^="g_4_"]');
@@ -179,7 +178,6 @@ async def main():
 
                 valid_matches_for_new_signals = []
                 
-                # ПРОГОНЯЕМ МАТЧИ ЧЕРЕЗ ФИЛЬТРЫ
                 for m in live_matches:
                     m_id = m['id']
                     stageText = m['time']
@@ -188,30 +186,46 @@ async def main():
                     total_goals = goals_home + goals_away
 
                     # ==================================================
-                    # 1. МОДУЛЬ ОТЧЕТОВ: ПРОВЕРЯЕМ УЖЕ НАЙДЕННЫЕ МАТЧИ
+                    # 1. МОДУЛЬ ОТЧЕТОВ: СТРОГИЙ КОНТРОЛЬ 2-ГО ПЕРИОДА
                     # ==================================================
                     if m_id in tracked_matches:
                         tracked = tracked_matches[m_id]
 
-                        # ⚽ ПРОВЕРКА НА ГОЛ (Тотал стал больше, чем был)
-                        if total_goals > tracked['initial_goals']:
-                            msg = (
-                                f"✅ <b>ЦЕЛЬ ПОРАЖЕНА! (ГОЛ)</b> ✅\n\n"
-                                f"🏆 <b>Лига:</b> {escape_html(tracked['league'])}\n"
-                                f"🏒 <b>Матч:</b> {escape_html(tracked['home'])} - {escape_html(tracked['away'])}\n"
-                                f"🥅 <b>Счет стал:</b> {goals_home}:{goals_away}\n"
-                                f"💸 <i>Ставка зашла! Идем дальше!</i>"
-                            )
-                            print(f"   🎯 ОТЧЕТ: ГОЛ! {tracked['home']} - {tracked['away']} ({goals_home}:{goals_away})")
-                            await send_tg(msg)
-                            del tracked_matches[m_id] # Удаляем из слежки
-                            continue
-
-                        # 🛑 ПРОВЕРКА НА МИНУС (Начался второй перерыв или матч кончился)
+                        # Определяем статусы для остановки
                         is_2nd_break = any(x in stageText for x in ['перерыв', 'break', 'pause', 'intermission', 'rust']) and any(x in stageText for x in ['2nd', '2-й', '2.'])
-                        is_finished = any(x in stageText for x in ['завершен', 'finished', 'конец', 'ft', 'после'])
+                        is_3rd_or_later = any(x in stageText for x in ['3rd', '3-й', '3.', 'завершен', 'finished', 'конец', 'ft', 'ot', 'овертайм', 'буллиты', 'penalties'])
 
-                        if is_2nd_break or is_finished:
+                        # ⚽ ПРОВЕРКА НА ГОЛ
+                        if total_goals > tracked['initial_goals']:
+                            if not is_3rd_or_later:
+                                # Гол забит до начала 3-го периода (во 2-м)
+                                msg = (
+                                    f"✅ <b>ЦЕЛЬ ПОРАЖЕНА! (ГОЛ ВО 2-М ПЕРИОДЕ)</b> ✅\n\n"
+                                    f"🏆 <b>Лига:</b> {escape_html(tracked['league'])}\n"
+                                    f"🏒 <b>Матч:</b> {escape_html(tracked['home'])} - {escape_html(tracked['away'])}\n"
+                                    f"🥅 <b>Счет стал:</b> {goals_home}:{goals_away}\n"
+                                    f"💸 <i>Ставка зашла! Красота!</i>"
+                                )
+                                print(f"   🎯 ОТЧЕТ: ГОЛ ВО 2-М! {tracked['home']} - {tracked['away']} ({goals_home}:{goals_away})")
+                                await send_tg(msg)
+                                del tracked_matches[m_id]
+                                continue
+                            else:
+                                # Гол есть, но уже идет 3-й период. Значит 2-й откатали по нулям.
+                                msg = (
+                                    f"❌ <b>ПРОМАХ (МИНУС)</b> ❌\n\n"
+                                    f"🏆 <b>Лига:</b> {escape_html(tracked['league'])}\n"
+                                    f"🏒 <b>Матч:</b> {escape_html(tracked['home'])} - {escape_html(tracked['away'])}\n"
+                                    f"🛑 <b>Итог:</b> 2-й период засушили (гол забили только в 3-м).\n"
+                                    f"📉 <b>Счет стал:</b> {goals_home}:{goals_away}"
+                                )
+                                print(f"   ☠️ ОТЧЕТ: МИНУС (Гол в 3-м). {tracked['home']} - {tracked['away']}")
+                                await send_tg(msg)
+                                del tracked_matches[m_id]
+                                continue
+
+                        # 🛑 ПРОВЕРКА НА СУШУ (Начался второй перерыв или 3-й период, а голов так и нет)
+                        if is_2nd_break or is_3rd_or_later:
                             msg = (
                                 f"❌ <b>ПРОМАХ (МИНУС)</b> ❌\n\n"
                                 f"🏆 <b>Лига:</b> {escape_html(tracked['league'])}\n"
@@ -221,19 +235,18 @@ async def main():
                             )
                             print(f"   ☠️ ОТЧЕТ: МИНУС. {tracked['home']} - {tracked['away']} ({goals_home}:{goals_away})")
                             await send_tg(msg)
-                            del tracked_matches[m_id] # Удаляем из слежки
+                            del tracked_matches[m_id]
                             continue
                         
-                        # Если гола нет и перерыв еще не настал - просто идем дальше
+                        # Если гола нет и 2-й период еще идет - просто продолжаем слежку
                         continue 
 
                     # ==================================================
-                    # 2. МОДУЛЬ РАДАРА: ИЩЕМ НОВЫЕ СИГНАЛЫ
+                    # 2. РАДАР: ИЩЕМ НОВЫЕ ПЕРЕРЫВЫ ДЛЯ СИГНАЛОВ
                     # ==================================================
                     if m_id in notified_matches:
-                        continue # Если уже давали сигнал, но слежка кончилась, пропускаем
+                        continue 
 
-                    # Ищем ТОЛЬКО 1-й перерыв для новых сигналов
                     is_1st_break = any(x in stageText for x in ['перерыв', 'break', 'pause', 'intermission', 'rust']) and not any(x in stageText for x in ['2nd', '2-й', '3rd', '3-й', '2.', '3.'])
 
                     if is_1st_break:
@@ -259,9 +272,6 @@ async def main():
                 # ==================================================
                 # 3. ТЯНЕМ СТАТИСТИКУ И СТРЕЛЯЕМ СИГНАЛАМИ
                 # ==================================================
-                if len(valid_matches_for_new_signals) > 0:
-                    print(f"👀 Найдено новых матчей на перерыве: {len(valid_matches_for_new_signals)}")
-
                 for match in valid_matches_for_new_signals:
                     m_id = match['id']
                     goals_home = int(match['scoreHome'])
@@ -302,7 +312,6 @@ async def main():
 
                         print(f"   📊 СТАТА | {match['home']} - {match['away']} | Броски: {total_shots}/{STRATEGY_MIN_SHOTS} | Штраф: {total_pm}м/{STRATEGY_MIN_PIM}м")
 
-                        # ФИНАЛЬНЫЙ ТРИГГЕР
                         if total_shots >= STRATEGY_MIN_SHOTS and total_pm >= STRATEGY_MIN_PIM:
                             
                             safe_league = escape_html(match['beautiful_league'])
@@ -324,7 +333,6 @@ async def main():
                             print(f"   ✅ СИГНАЛ! Беру в слежку: {match['home']} - {match['away']}")
                             await send_tg(msg)
                             
-                            # ДОБАВЛЯЕМ В БАЗУ ДЛЯ АВТО-ДОЖИМА
                             notified_matches.add(m_id)
                             tracked_matches[m_id] = {
                                 'home': match['home'],
